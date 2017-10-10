@@ -67,6 +67,7 @@ class Elo:
             team_elo.loc[index, 'other_elo'] = team_elo.drop(index)['elo'].mean()
         
         # Expected score for teams
+        # This uses the logistic curve and formulas from Wikipedia
         team_elo['expected'] = 1./(1.+10.**(team_elo['other_elo'] - team_elo['elo']))
 
         # Actual team scores
@@ -98,6 +99,9 @@ class Elo:
         This represents a 2v2 game, where mention1 and mention2 defeated
         mention3 and mention4.
 
+        There must be at least two teams. The team listing must end
+        with a status, for example win or loss.
+
         This requires that the caller have permissions to manage matches.
         '''
 
@@ -121,6 +125,11 @@ class Elo:
         
         # Create the df
         match_df = pd.DataFrame(match_data, columns=self.match_history.columns)
+
+        # Make sure there are actually at least 2 teams.
+        if match_df['team'].nunique() < 2:
+            await self.bot.say('Need at least 2 teams for a match!')
+            return
 
         # update elo rating of player and wins/losses,
         # by calling another function
