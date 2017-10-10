@@ -1,0 +1,23 @@
+{
+	"general": {
+		"description": "Manage Elo ratings and matches",
+		"prefix": "elo!",
+		"space_after_prefix": true, 
+		"playing": "MissileWars",
+		"token": "your-discord-bot-token-here"
+	},
+	"elo": {
+		"enable": true,
+		"match_history_path": "matches.json",
+		"user_status_path": "players.json",
+		"default_elo": 1200,
+		"default_status_value": 0.0,
+		"status_values": {
+			"win": 1.0,
+			"loss": 0.0,
+			"draw": 0.5
+		},
+		"k_factor": 32
+	}
+}
+
