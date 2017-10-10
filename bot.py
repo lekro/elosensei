@@ -42,7 +42,7 @@ async def on_ready():
     print(bot.user.id)
     print('Invite: https://discordapp.com/oauth2/authorize?client_id={}&scope=bot'.format(bot.user.id))
     print('------')
-    await bot.change_presence(game=discord.Game(name='MissileWars'))
+    await bot.change_presence(game=discord.Game(name=config['general']['playing']))
 
 
 @bot.command()
