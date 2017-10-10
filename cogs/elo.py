@@ -110,7 +110,9 @@ class Elo:
     async def match(self, ctx, *, args: str):
         '''Record a match into the system.
 
-        format: match @mention1 @mention2 win ! @mention3 @mention4 loss
+        format: match @mention1 [@others_on_team_1 ...] {win|loss|draw} ! @mention2 [@others ...] {win|loss|draw} [! other teams in the same format ...] [at YYYY-mm-dd HH-mm-ss]
+
+        example: match @mention1 @mention2 win ! @mention3 @mention4 loss at 2017-01-01 23:01:01
         This represents a 2v2 game, where mention1 and mention2 defeated
         mention3 and mention4.
 
@@ -120,22 +122,27 @@ class Elo:
         This requires that the caller have permissions to manage matches.
         '''
 
-        time_now = datetime.datetime.now()
+        timestamp = datetime.datetime.now()
         match_data = []
 
+        split_time = args.split(sep=' at ')
+        if len(split_time) > 1:
+            timestamp = datetime.datetime.strptime(split_time[1], '%Y-%m-%d %H:%M:%S')
+        teams_str = split_time[0]
+        
         team_name = 0
 
-        for team_str in args.split(sep='!'):
+        for team_str in teams_str.split(sep='!'):
             team_name += 1
             team = []
-            for member_str in team_str.lstrip().rstrip().split(sep=' '):
+            for member_str in team_str.split():
                 team.append(member_str)
             team_status = team.pop()
             for team_member in team:
                 # Get player's elo
                 tm_elo = self.get_elo(self.user_status, team_member)
 
-                match_data.append([time_now, team_member, tm_elo, team_name, team_status])
+                match_data.append([timestamp, team_member, tm_elo, team_name, team_status])
                 
         
         # Create the df
