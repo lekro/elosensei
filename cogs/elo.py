@@ -30,9 +30,9 @@ class Elo:
             self.user_status = pd.DataFrame(columns=['elo', 'wins', 'losses'])
 
     def get_elo(self, user_status, player):
-        try:
+        if player in user_status.index:
             return user_status.loc[player, 'elo']
-        except:
+        else:
             user_status.loc[player] = (self.config['default_elo'], 0, 0)
             return self.config['default_elo']
 
@@ -44,23 +44,32 @@ class Elo:
         match_history = pd.DataFrame(columns=self.match_history.columns)
 
         # For each match...
-        for time, match in self.match_history.groupby('timestamp'):
+        for time, match in self.match_history.groupby('timestamp', as_index=False):
             match = match.copy()
             # Replace the elo rating of each player with what it should be, from the user_status
-            match['elo'] = match['playerID'].applymap(lambda p: self.get_elo(user_status, p))
+            match['elo'] = match['playerID'].apply(lambda p: self.get_elo(user_status, p))
         
             # Update the user status for each player
-            await self.update_players(match, user_status)
+            user_status = await self.update_players(match, user_status)
+
+            # Add the match to the new match history
+            match_history = match_history.append(match, ignore_index=True)
 
         # Finally, update the Elo object's match history and user status
         self.match_history = match_history
         self.user_status = user_status
-            
+
+        print("Recalculated elo ratings.")
+        print("New match history:")
+        print(match_history)
+        print("New ratings:")
+        print(user_status)
 
     async def update_players(self, match_df, user_status):
-        team_elo = match_df.groupby('team')[['elo', 'status']].sum(numeric_only=True)
+        team_elo = match_df.groupby('team')[['elo']].sum(numeric_only=True)
+        team_elo['status'] = match_df.set_index('team')['status']
 
-        score_diff = team_elo.iloc[0, 'elo'] - team_elo.iloc[1, 'elo']
+        user_status = user_status.copy()
 
         # Take mean of every team but this one
         for index, row in team_elo.iterrows():
@@ -68,20 +77,26 @@ class Elo:
         
         # Expected score for teams
         # This uses the logistic curve and formulas from Wikipedia
-        team_elo['expected'] = 1./(1.+10.**(team_elo['other_elo'] - team_elo['elo']))
+        team_elo['expected'] = 1./(1.+10.**((team_elo['other_elo'] - team_elo['elo'])/400))
 
         # Actual team scores
-        team_elo['actual'] = team_elo['status'].applymap(self.get_status_value)
+        team_elo['actual'] = team_elo['status'].apply(self.get_status_value)
         k_factor = self.config['k_factor']
         team_elo['elo_delta'] = k_factor * (team_elo['actual'] - team_elo['expected'])
-        
+
+        print("processing one match:")
+        print(team_elo)
+
         for index, row in match_df.iterrows():
+            player = row['playerID']
             user_status.loc[player, 'elo'] += team_elo.loc[row.team, 'elo_delta']
             actual_score = team_elo.loc[row.team, 'actual']
             if actual_score == 1:
                 user_status.loc[player, 'wins'] += 1
             elif actual_score == 0:
                 user_status.loc[player, 'losses'] += 1
+
+        return user_status
 
 
     def get_status_value(self, status):
@@ -91,7 +106,7 @@ class Elo:
             return self.config['default_status_value']
         
 
-    @bot.command(pass_context=True)
+    @commands.command(pass_context=True)
     async def match(self, ctx, *, args: str):
         '''Record a match into the system.
 
@@ -113,7 +128,7 @@ class Elo:
         for team_str in args.split(sep='!'):
             team_name += 1
             team = []
-            for member_str in team_str.rstrip().split(sep=' '):
+            for member_str in team_str.lstrip().rstrip().split(sep=' '):
                 team.append(member_str)
             team_status = team.pop()
             for team_member in team:
@@ -125,6 +140,7 @@ class Elo:
         
         # Create the df
         match_df = pd.DataFrame(match_data, columns=self.match_history.columns)
+        print(match_df)
 
         # Make sure there are actually at least 2 teams.
         if match_df['team'].nunique() < 2:
@@ -133,20 +149,23 @@ class Elo:
 
         # update elo rating of player and wins/losses,
         # by calling another function
-        await self.update_players(match_df, self.user_status)
+        self.user_status = await self.update_players(match_df, self.user_status)
 
         # Add the new df to the match history
-        self.match_history = self.match_history.append(match_df)
+        self.match_history = self.match_history.append(match_df, ignore_index=True)
+        print("current match history:")
+        print(self.match_history)
+        print("current player ratings:")
+        print(self.user_status)
         # Sometimes there are circular references within dataframes? so we have to
         # invoke the gc
         gc.collect()
         await self.bot.say('Added match!')
-        await self.bot.say(str(match_df))
 
-    @bot.command(pass_context=True)
+    @commands.command(pass_context=True)
     async def recalculate(self, ctx):
         '''Recalculate elo ratings from scratch.'''
-        await recalculate_elo(self)
+        await self.recalculate_elo()
         await self.bot.say('Recalculated elo ratings!')
 
 
