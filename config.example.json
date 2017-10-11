@@ -21,7 +21,27 @@
 		"k_factor": 50,
 		"max_teams": 2,
 		"score_limit": 1.0,
-		"require_score_limit": true
+		"require_score_limit": true,
+		"ranks": [
+			{
+				"name": "Bronze",
+				"color": "#AAAAAA",
+				"cutoff": 0,
+				"default": true
+			},
+			{
+				"name": "Silver",
+				"color": "#AAAAAA",
+				"cutoff": 1350,
+				"default": false
+			},
+			{
+				"name": "Gold",
+				"color": "#AAAAAA",
+				"cutoff": 1500,
+				"default": false
+			}
+		]
 	}
 }
 

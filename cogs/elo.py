@@ -27,14 +27,14 @@ class Elo:
             self.user_status = pd.read_json(self.config['user_status_path'])
         except:
             # Create new user status
-            self.user_status = pd.DataFrame(columns=['name', 'elo', 'wins', 'losses', 'matches_played'])
+            self.user_status = pd.DataFrame(columns=['name', 'elo', 'wins', 'losses', 'matches_played', 'rank', 'color'])
             self.user_status.index.name = 'playerID'
 
     def get_elo(self, user_status, player):
         if player in user_status.index:
             return user_status.loc[player, 'elo']
         else:
-            user_status.loc[player] = (None, self.config['default_elo'], 0, 0, 0)
+            user_status.loc[player] = dict(name=None, elo=self.config['default_elo'], wins=0, losses=0, matches_played=0, rank=None, color=None)
             return self.config['default_elo']
 
     async def recalculate_elo(self):
@@ -121,9 +121,21 @@ class Elo:
                 user_status.loc[player, 'wins'] += 1
             elif actual_score == 0:
                 user_status.loc[player, 'losses'] += 1
+            await self.update_rank(user_status, row['playerID'])
 
         return user_status
 
+    async def update_rank(self, user_status, uid):
+        max_rank = None
+        for rank in self.config['ranks']:
+            if max_rank is None:
+                if user_status.loc[uid, 'elo'] > rank['cutoff'] or rank['default']:
+                    max_rank = rank
+            else:
+                if user_status.loc[uid, 'elo'] > rank['cutoff'] and rank['cutoff'] > max_rank['cutoff']:
+                    max_rank = rank
+        user_status.loc[uid, 'rank'] = max_rank['name']
+        user_status.loc[uid, 'color'] = max_rank['color']
 
     def get_status_value(self, status):
         try:
@@ -317,11 +329,21 @@ class Elo:
     async def show_player(self, ctx, user_id):
 
         uinfo = self.user_status.loc[user_id]
-        embed = discord.Embed(title=uinfo['name'], type='rich')
-        embed.add_field(name='Elo rating', value=int(uinfo['elo']))
-        embed.add_field(name='Matches won', value=int(uinfo['wins']))
-        embed.add_field(name='Matches lost', value=int(uinfo['losses']))
-        embed.add_field(name='Matches played', value=int(uinfo['matches_played']))
+        try:
+            avatar = ctx.message.server.get_member(user_id).avatar_url
+        except:
+            avatar = None
+
+        title = '%s (%s, %d)' % (uinfo['name'], uinfo['rank'], int(uinfo['elo']))
+        embed = discord.Embed(type='rich',
+                              color=int('0x' + uinfo['color'], base=16))
+        if avatar:
+            embed.set_author(name=title, icon_url=avatar)
+        else:
+            embed.set_author(name=title)
+        embed.add_field(name='Wins', value=int(uinfo['wins']))
+        embed.add_field(name='Losses', value=int(uinfo['losses']))
+        embed.add_field(name='Total', value=int(uinfo['matches_played']))
         return await self.bot.send_message(ctx.message.channel, embed=embed)
 
     @commands.command(pass_context=True)
@@ -344,7 +366,7 @@ class Elo:
         # TODO check the server and get ids of users with this name as well
         if name is not None:
             for uid, uinfo in self.user_status.iterrows():
-                if uinfo['name'].lower().startswith(name):
+                if str(uinfo['name']).lower().startswith(name.lower()):
                     await self.show_player(ctx, uid)
         else:
             await self.show_player(ctx, ctx.message.author.id)
@@ -358,7 +380,7 @@ class Elo:
         desc = ''
 
         for i, (uid, uinfo) in enumerate(topn.iterrows()):
-            desc += '%d. %s (%d)\n' % (i+1, uinfo['name'], round(uinfo['elo']))
+            desc += '%d. %s (%s, %d)\n' % (i+1, uinfo['name'], uinfo['rank'], round(uinfo['elo']))
         embed = discord.Embed(title=title, type='rich', description=desc)
 
         return await self.bot.send_message(ctx.message.channel, embed=embed)
