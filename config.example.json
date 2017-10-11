@@ -17,7 +17,9 @@
 			"loss": 0.0,
 			"draw": 0.5
 		},
-		"k_factor": 32
+		"k_factor": 50,
+		"max_teams": 2,
+		"score_limit": 1.0
 	}
 }
 

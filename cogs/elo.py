@@ -122,12 +122,59 @@ class Elo:
         This requires that the caller have permissions to manage matches.
         '''
 
-        timestamp = datetime.datetime.now()
+        time_now = datetime.datetime.now()
+        timestamp = time_now
         match_data = []
 
         split_time = args.split(sep=' at ')
         if len(split_time) > 1:
-            timestamp = datetime.datetime.strptime(split_time[1], '%Y-%m-%d %H:%M:%S')
+
+            # Try various ways of formatting the time, and infer missing information.
+            # If it doesn't work, then we've gotta complain instead of silently failing!
+            try:
+                # Full date and full time
+                timestamp = datetime.datetime.strptime(split_time[1], '%Y-%m-%d %H:%M:%S')
+            except ValueError:
+                pass
+            try:
+                # Full date, time without seconds
+                timestamp = datetime.datetime.strptime(split_time[1], '%Y-%m-%d %H:%M')
+            except ValueError:
+                pass
+            try:
+                # Full date only
+                timestamp = datetime.datetime.strptime(split_time[1], '%Y-%m-%d')
+            except ValueError:
+                pass
+            # The same without the year attached
+            try:
+                # Full date and full time
+                timestamp = datetime.datetime.strptime(split_time[1], '%m-%d %H:%M:%S')
+                timestamp = timestamp.replace(year=datetime.date.today().year)
+            except ValueError:
+                pass
+            try:
+                # Full date, time without seconds
+                timestamp = datetime.datetime.strptime(split_time[1], '%m-%d %H:%M')
+                timestamp = timestamp.replace(year=datetime.date.today().year)
+            except ValueError:
+                pass
+            try:
+                # Full date only
+                timestamp = datetime.datetime.strptime(split_time[1], '%m-%d')
+                timestamp = timestamp.replace(year=datetime.date.today().year)
+            except ValueError:
+                pass
+
+        # So if all those methods failed, we complain
+        if len(split_time) > 1 and timestamp == time_now:
+            # Complain here!
+            print('failed to parse timestamp')
+            await self.bot.say('Couldn\'t parse timestamp! Make sure you follow the format!\n'
+                         '(the timestamp should be formatted YYYY-mm-dd HH-mm-ss with '
+                         '24 hour time.)')
+            return
+
         teams_str = split_time[0]
         
         team_name = 0
@@ -135,9 +182,29 @@ class Elo:
         for team_str in teams_str.split(sep='!'):
             team_name += 1
             team = []
+            done_with_team = False
             for member_str in team_str.split():
-                team.append(member_str)
-            team_status = team.pop()
+                # If we have already iterated through, that means there are extraneous
+                # arguments! Notify the user that they will be ignored...
+                if done_with_team:
+                    await self.bot.say('Extraneous arguments detected while parsing teams!\n'
+                                       'Make sure you use valid @mentions for all players '
+                                       'and only specify `win` or `loss` after the list of '
+                                       'players!')
+                    return
+                # First make sure this is actually a valid user...
+                user_id = member_str.strip('<@>')
+                print(user_id)
+                try:
+                    # The user id should be an integer as a string...
+                    # We could optionally query discord, but that takes an annoying
+                    # amount of time.
+                    int(user_id)
+                    team.append(user_id)
+                except:
+                    # So if this isn't a user id, it must be the team status.
+                    team_status = member_str
+                    done_with_team = True
             for team_member in team:
                 # Get player's elo
                 tm_elo = self.get_elo(self.user_status, team_member)
@@ -152,6 +219,10 @@ class Elo:
         # Make sure there are actually at least 2 teams.
         if match_df['team'].nunique() < 2:
             await self.bot.say('Need at least 2 teams for a match!')
+            return
+
+        if match_df['team'].nunique() > self.config['max_teams']:
+            await self.bot.say('Too many teams in this match!')
             return
 
         # update elo rating of player and wins/losses,
