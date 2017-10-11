@@ -17,9 +17,11 @@
 			"loss": 0.0,
 			"draw": 0.5
 		},
+		"allow_only_defined_status_values": true,
 		"k_factor": 50,
 		"max_teams": 2,
-		"score_limit": 1.0
+		"score_limit": 1.0,
+		"require_score_limit": true
 	}
 }
 

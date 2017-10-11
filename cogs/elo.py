@@ -21,13 +21,14 @@ class Elo:
             self.match_history = pd.read_json(self.config['match_history_path'])
         except:
             # Create a new match history
-            self.match_history = pd.DataFrame(columns=['timestamp', 'playerID', 'elo', 'team', 'status'])
+            self.match_history = pd.DataFrame(columns=['timestamp', 'playerID', 'elo', 'new_elo', 'team', 'status'])
 
         try:
             self.user_status = pd.read_json(self.config['user_status_path'])
         except:
             # Create new user status
             self.user_status = pd.DataFrame(columns=['elo', 'wins', 'losses'])
+            self.user_status.index.name = 'playerID'
 
     def get_elo(self, user_status, player):
         if player in user_status.index:
@@ -40,6 +41,7 @@ class Elo:
         
         # Reinstantiate user status
         user_status = pd.DataFrame(columns=self.user_status.columns)
+        user_status.index.name = 'playerID'
         # Reinstantiate match history
         match_history = pd.DataFrame(columns=self.match_history.columns)
 
@@ -51,6 +53,9 @@ class Elo:
         
             # Update the user status for each player
             user_status = await self.update_players(match, user_status)
+
+            # Grab the new elo
+            match = match.merge(user_status.reset_index()[['playerID', 'elo']].rename(columns=dict(elo='new_elo', on='playerID')))
 
             # Add the match to the new match history
             match_history = match_history.append(match, ignore_index=True)
@@ -66,7 +71,8 @@ class Elo:
         print(user_status)
 
     async def update_players(self, match_df, user_status):
-        team_elo = match_df.groupby('team')[['elo']].sum(numeric_only=True)
+        team_elo = match_df.groupby('team')[['elo']].sum()
+
         team_elo['status'] = match_df.set_index('team')['status']
 
         user_status = user_status.copy()
@@ -81,6 +87,24 @@ class Elo:
 
         # Actual team scores
         team_elo['actual'] = team_elo['status'].apply(self.get_status_value)
+
+        # If allowing only defined status values, we might have NaN values in there...
+        # Fail if that happens..
+        if team_elo['actual'].isnull().any():
+            await self.bot.say('Unknown team status! Try one of '+
+                               (', ').join(self.config['status_values'].keys()) + '!')
+            return None
+
+        # If score limit must be met exactly...
+        if self.config['require_score_limit'] and team_elo['actual'].sum() != self.config['score_limit']:
+            await self.bot.say('Not enough/too many teams are winning/losing!')
+            return None
+
+        # Limit total score
+        if team_elo['actual'].sum() > self.config['score_limit']:
+            await self.bot.say('Maximum score exceeded! Make sure the teams are not all winning!')
+            return None
+
         k_factor = self.config['k_factor']
         team_elo['elo_delta'] = k_factor * (team_elo['actual'] - team_elo['expected'])
 
@@ -103,7 +127,12 @@ class Elo:
         try:
             return self.config['status_values'][status]
         except:
-            return self.config['default_status_value']
+            if self.config['allow_only_defined_status_values']:
+                # This will become NaN in the dataframe
+                # and we can catch it later
+                return None
+            else:
+                return self.config['default_status_value']
         
 
     @commands.command(pass_context=True)
@@ -209,11 +238,11 @@ class Elo:
                 # Get player's elo
                 tm_elo = self.get_elo(self.user_status, team_member)
 
-                match_data.append([timestamp, team_member, tm_elo, team_name, team_status])
+                match_data.append(dict(timestamp=timestamp, playerID=team_member, elo=tm_elo, team=team_name, status=team_status))
                 
         
         # Create the df
-        match_df = pd.DataFrame(match_data, columns=self.match_history.columns)
+        match_df = pd.DataFrame(match_data, columns=self.match_history.columns.drop('new_elo'))
         print(match_df)
 
         # Make sure there are actually at least 2 teams.
@@ -227,7 +256,14 @@ class Elo:
 
         # update elo rating of player and wins/losses,
         # by calling another function
-        self.user_status = await self.update_players(match_df, self.user_status)
+        new_user_status = await self.update_players(match_df, self.user_status)
+        if new_user_status is not None:
+            self.user_status = new_user_status
+        else:
+            # If we couldn't update the scores, fail!
+            return
+
+        match_df = match_df.merge(self.user_status.reset_index()[['playerID', 'elo']].rename(columns=dict(elo='new_elo', on='playerID')))
 
         # Add the new df to the match history
         self.match_history = self.match_history.append(match_df, ignore_index=True)
