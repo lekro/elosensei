@@ -275,6 +275,31 @@ class Elo:
         # invoke the gc
         gc.collect()
         await self.bot.say('Added match!')
+        await self.show_match(ctx, timestamp)
+
+    async def show_match(self, ctx, timestamp):
+
+        # First try to find the match
+        match = self.match_history.set_index('timestamp')
+        match = match.loc[pd.Timestamp(timestamp)]
+        if len(match) == 0:
+            # We couldn't find the match!
+            return False
+
+        # Now that we have the match, we pretty-print
+
+        # We can set the title to something like 1v1 Match
+        title = 'v'.join(match.groupby('team')['playerID'].count().astype(str).tolist())
+        title += ' match'
+        embed = discord.Embed(title=title, type='rich', timestamp=timestamp)
+
+        for team, team_members in match.groupby('team'):
+            field_name = 'Team %s (%s)' % (team, team_members['status'].iloc[0])
+            field_value = ''
+            for i, t in team_members.iterrows():
+                field_value += '*%s* (%d -> %d)\n' % (t['playerID'], t['elo'], t['new_elo'])
+            embed.add_field(name=field_name, value=field_value)
+        return await self.bot.send_message(ctx.message.channel, embed=embed)
 
     @commands.command(pass_context=True)
     async def recalculate(self, ctx):
