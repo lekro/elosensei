@@ -27,14 +27,14 @@ class Elo:
             self.user_status = pd.read_json(self.config['user_status_path'])
         except:
             # Create new user status
-            self.user_status = pd.DataFrame(columns=['elo', 'wins', 'losses'])
+            self.user_status = pd.DataFrame(columns=['name', 'elo', 'wins', 'losses'])
             self.user_status.index.name = 'playerID'
 
     def get_elo(self, user_status, player):
         if player in user_status.index:
             return user_status.loc[player, 'elo']
         else:
-            user_status.loc[player] = (self.config['default_elo'], 0, 0)
+            user_status.loc[player] = (None, self.config['default_elo'], 0, 0)
             return self.config['default_elo']
 
     async def recalculate_elo(self):
@@ -73,7 +73,8 @@ class Elo:
     async def update_players(self, match_df, user_status):
         team_elo = match_df.groupby('team')[['elo']].sum()
 
-        team_elo['status'] = match_df.set_index('team')['status']
+        print(match_df)
+        team_elo['status'] = match_df.set_index('team')['status'].unique()
 
         user_status = user_status.copy()
 
@@ -151,7 +152,7 @@ class Elo:
         This requires that the caller have permissions to manage matches.
         '''
 
-        time_now = datetime.datetime.now()
+        time_now = datetime.datetime.utcnow()
         timestamp = time_now
         match_data = []
 
@@ -207,6 +208,7 @@ class Elo:
         teams_str = split_time[0]
         
         team_name = 0
+        users_seen = []
 
         for team_str in teams_str.split(sep='!'):
             team_name += 1
@@ -230,6 +232,12 @@ class Elo:
                     # amount of time.
                     int(user_id)
                     team.append(user_id)
+                    if user_id not in users_seen:
+                        users_seen.append(user_id)
+                    else:
+                        # We are getting a duplicate user.
+                        await self.bot.say('The same user was repeated multiple times!')
+                        return
                 except:
                     # So if this isn't a user id, it must be the team status.
                     team_status = member_str
@@ -262,6 +270,10 @@ class Elo:
         else:
             # If we couldn't update the scores, fail!
             return
+
+        # Update names of people mentioned here...
+        for member in ctx.message.mentions:
+            self.user_status.loc[member.id, 'name'] = member.name
 
         match_df = match_df.merge(self.user_status.reset_index()[['playerID', 'elo']].rename(columns=dict(elo='new_elo', on='playerID')))
 
@@ -297,7 +309,7 @@ class Elo:
             field_name = 'Team %s (%s)' % (team, team_members['status'].iloc[0])
             field_value = ''
             for i, t in team_members.iterrows():
-                field_value += '*%s* (%d -> %d)\n' % (t['playerID'], t['elo'], t['new_elo'])
+                field_value += '*%s* (%d -> %d)\n' % (self.user_status.loc[t['playerID'], 'name'], round(t['elo']), round(t['new_elo']))
             embed.add_field(name=field_name, value=field_value)
         return await self.bot.send_message(ctx.message.channel, embed=embed)
 
