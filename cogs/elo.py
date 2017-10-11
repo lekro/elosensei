@@ -27,14 +27,14 @@ class Elo:
             self.user_status = pd.read_json(self.config['user_status_path'])
         except:
             # Create new user status
-            self.user_status = pd.DataFrame(columns=['name', 'elo', 'wins', 'losses'])
+            self.user_status = pd.DataFrame(columns=['name', 'elo', 'wins', 'losses', 'matches_played'])
             self.user_status.index.name = 'playerID'
 
     def get_elo(self, user_status, player):
         if player in user_status.index:
             return user_status.loc[player, 'elo']
         else:
-            user_status.loc[player] = (None, self.config['default_elo'], 0, 0)
+            user_status.loc[player] = (None, self.config['default_elo'], 0, 0, 0)
             return self.config['default_elo']
 
     async def recalculate_elo(self):
@@ -116,6 +116,7 @@ class Elo:
             player = row['playerID']
             user_status.loc[player, 'elo'] += team_elo.loc[row.team, 'elo_delta']
             actual_score = team_elo.loc[row.team, 'actual']
+            user_status.loc[player, 'matches_played'] += 1
             if actual_score == 1:
                 user_status.loc[player, 'wins'] += 1
             elif actual_score == 0:
@@ -313,11 +314,53 @@ class Elo:
             embed.add_field(name=field_name, value=field_value)
         return await self.bot.send_message(ctx.message.channel, embed=embed)
 
+    async def show_player(self, ctx, user_id):
+
+        uinfo = self.user_status.loc[user_id]
+        embed = discord.Embed(title=uinfo['name'], type='rich')
+        embed.add_field(name='Elo rating', value=int(uinfo['elo']))
+        embed.add_field(name='Matches won', value=int(uinfo['wins']))
+        embed.add_field(name='Matches lost', value=int(uinfo['losses']))
+        embed.add_field(name='Matches played', value=int(uinfo['matches_played']))
+        return await self.bot.send_message(ctx.message.channel, embed=embed)
+
     @commands.command(pass_context=True)
     async def recalculate(self, ctx):
         '''Recalculate elo ratings from scratch.'''
         await self.recalculate_elo()
         await self.bot.say('Recalculated elo ratings!')
 
+    @commands.command(pass_context=True)
+    async def player(self, ctx, *, name=None):
+        '''Show a player's Elo profile.
+
+        For example, `elo! player lekro` will display the profile of all
+        players whose names start with 'lekro'. 
+
+        You can also @mention user(s).
+        '''
+
+        # For now, we'll only search the database of known users. But we can also check the server itself.
+        # TODO check the server and get ids of users with this name as well
+        if name is not None:
+            for uid, uinfo in self.user_status.iterrows():
+                if uinfo['name'].lower().startswith(name):
+                    await self.show_player(ctx, uid)
+        else:
+            await self.show_player(ctx, ctx.message.author.id)
+
+    @commands.command(pass_context=True)
+    async def top(self, ctx, *, n=10):
+        '''Show the top n players.'''
+
+        topn = self.user_status.sort_values('elo', ascending=False).head(n)
+        title = 'Top %d Players' % n
+        desc = ''
+
+        for i, (uid, uinfo) in enumerate(topn.iterrows()):
+            desc += '%d. %s (%d)\n' % (i+1, uinfo['name'], round(uinfo['elo']))
+        embed = discord.Embed(title=title, type='rich', description=desc)
+
+        return await self.bot.send_message(ctx.message.channel, embed=embed)
 
 
