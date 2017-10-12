@@ -25,19 +25,19 @@
 		"ranks": [
 			{
 				"name": "Bronze",
-				"color": "#AAAAAA",
+				"color": "AAAAAA",
 				"cutoff": 0,
 				"default": true
 			},
 			{
 				"name": "Silver",
-				"color": "#AAAAAA",
+				"color": "AAAAAA",
 				"cutoff": 1350,
 				"default": false
 			},
 			{
 				"name": "Gold",
-				"color": "#AAAAAA",
+				"color": "AAAAAA",
 				"cutoff": 1500,
 				"default": false
 			}

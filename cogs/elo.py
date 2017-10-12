@@ -74,7 +74,7 @@ class Elo:
         team_elo = match_df.groupby('team')[['elo']].sum()
 
         print(match_df)
-        team_elo['status'] = match_df.set_index('team')['status'].unique()
+        team_elo['status'] = match_df.set_index('team')['status']
 
         user_status = user_status.copy()
 
@@ -153,7 +153,9 @@ class Elo:
     async def match(self, ctx, *, args: str):
         '''Record a match into the system.
 
-        format: match @mention1 [@others_on_team_1 ...] {win|loss|draw} ! @mention2 [@others ...] {win|loss|draw} [! other teams in the same format ...] [at YYYY-mm-dd HH-mm-ss]
+        format: match TEAM1 TEAM2 [at YYYY-mm-dd HH-mm-ss]
+
+        where TEAM# is in the format @mention1 [@mention2 ...] {win|loss|draw}
 
         example: match @mention1 @mention2 win ! @mention3 @mention4 loss at 2017-01-01 23:01:01
         This represents a 2v2 game, where mention1 and mention2 defeated
@@ -220,46 +222,68 @@ class Elo:
 
         teams_str = split_time[0]
         
-        team_name = 0
+        team_name = 1
         users_seen = []
 
-        for team_str in teams_str.split(sep='!'):
-            team_name += 1
-            team = []
-            done_with_team = False
-            for member_str in team_str.split():
-                # If we have already iterated through, that means there are extraneous
-                # arguments! Notify the user that they will be ignored...
+        teams = {}
+        team = []
+        done_with_team = False
+        for member_str in teams_str.split():
+            # If we have already iterated through, that means there are extraneous
+            # arguments! Notify the user that they will be ignored...
+            # First make sure this is actually a valid user...
+            user_id = member_str.strip('<@>')
+            print(user_id)
+            try:
+                # The user id should be an integer as a string...
+                # We could optionally query discord, but that takes an annoying
+                # amount of time.
+                int(user_id)
+                print('User id found: %s' % user_id)
+
+                # Since this is a user id, start a new team if necessary:
+                if done_with_team:
+                    print('Done with team, adding another team...')
+                    team = []
+                    team_name += 1
+                    done_with_team = False
+                team.append(user_id)
+                if user_id not in users_seen:
+                    users_seen.append(user_id)
+                else:
+                    # We are getting a duplicate user.
+                    await self.bot.say('The same user was repeated multiple times!')
+                    return
+            except:
+                # So if this isn't a user id, it must be the team status.
+
+                # If we just finished a team, this is an extraneous argument!
                 if done_with_team:
                     await self.bot.say('Extraneous arguments detected while parsing teams!\n'
                                        'Make sure you use valid @mentions for all players '
                                        'and only specify `win` or `loss` after the list of '
                                        'players!')
                     return
-                # First make sure this is actually a valid user...
-                user_id = member_str.strip('<@>')
-                print(user_id)
-                try:
-                    # The user id should be an integer as a string...
-                    # We could optionally query discord, but that takes an annoying
-                    # amount of time.
-                    int(user_id)
-                    team.append(user_id)
-                    if user_id not in users_seen:
-                        users_seen.append(user_id)
-                    else:
-                        # We are getting a duplicate user.
-                        await self.bot.say('The same user was repeated multiple times!')
-                        return
-                except:
-                    # So if this isn't a user id, it must be the team status.
-                    team_status = member_str
-                    done_with_team = True
-            for team_member in team:
-                # Get player's elo
-                tm_elo = self.get_elo(self.user_status, team_member)
 
-                match_data.append(dict(timestamp=timestamp, playerID=team_member, elo=tm_elo, team=team_name, status=team_status))
+                print('Status found: %s' % member_str)
+                team_status = member_str
+                done_with_team = True
+                teams[team_name] = (team, team_status)
+
+        # If we haven't completed all the teams (all teams must terminate with a team status)
+        # then we've gotta complain!
+        if not done_with_team:
+            await self.bot.say('Team not completed! Make sure to terminate the teams with a team status!\n'
+                         '(try putting win or loss after the list of team members)')
+            return
+            
+        for team in teams.keys():
+            members, status = teams[team]
+            for member in members:
+                # Get player's elo
+                tm_elo = self.get_elo(self.user_status, member)
+
+                match_data.append(dict(timestamp=timestamp, playerID=member, elo=tm_elo, team=team, status=status))
                 
         
         # Create the df
