@@ -350,7 +350,14 @@ class Elo:
             embed.add_field(name=field_name, value=field_value)
         return await self.bot.send_message(ctx.message.channel, embed=embed)
 
-    async def show_player(self, ctx, user_id):
+    async def get_player_card(self, ctx, user_id):
+        '''Get an Embed describing the player's stats.
+
+        ctx is a context from which we can grab the server and
+        the avatar.
+
+        user_id is of the player whose stats are to be shown.
+        '''
 
         uinfo = self.user_status.loc[user_id]
         try:
@@ -368,7 +375,8 @@ class Elo:
         embed.add_field(name='Wins', value=int(uinfo['wins']))
         embed.add_field(name='Losses', value=int(uinfo['losses']))
         embed.add_field(name='Total', value=int(uinfo['matches_played']))
-        return await self.bot.send_message(ctx.message.channel, embed=embed)
+        return embed
+
 
     @commands.command(pass_context=True)
     async def recalculate(self, ctx):
@@ -380,24 +388,84 @@ class Elo:
     async def player(self, ctx, *, name=None):
         '''Show a player's Elo profile.
 
+        Players can be searched by the beginning of their name, or by mentioning
+        them. If no search query is present, the caller's (your) player card
+        will be shown, if any.
+
         For example, `elo! player lekro` will display the profile of all
         players whose names start with 'lekro'. 
 
         You can also @mention user(s).
         '''
 
-        # For now, we'll only search the database of known users. But we can also check the server itself.
+        # For now, we'll only search the database of known users. 
+        # But we can also check the server itself.
         # TODO check the server and get ids of users with this name as well
+        player_cards = []
         if name is not None:
-            for uid, uinfo in self.user_status.iterrows():
+            # Get page number to display. This will be the last part of the name,
+            # if any.
+
+            try:
+                page = int(name.split()[-1])-1
+                # Remove the page number from the query
+                name = name[:name.rfind(' ')]
+            except ValueError:
+                # Assume we want to see the first page
+                page = 0
+
+            for i, (uid, uinfo) in enumerate(self.user_status.iterrows()):
                 if str(uinfo['name']).lower().startswith(name.lower()):
-                    await self.show_player(ctx, uid)
+                    player_cards.append(await self.get_player_card(ctx, uid))
+            # Process mentions 
+            if len(ctx.message.mentions) > 0:
+                for mention in ctx.message.mentions:
+                    player_cards.append(await self.get_player_card(ctx, mention.id))
         else:
-            await self.show_player(ctx, ctx.message.author.id)
+            # Process self
+            player_cards.append(await self.get_player_card(ctx, ctx.message.author.id))
+
+        # If we found no players, tell the caller that!
+        if len(player_cards) == 0:
+            await self.bot.say('Couldn\'t find any players!')
+            return
+
+        page_size = self.config['max_player_cards']
+        # If we find only one page of players, just output them.
+        if len(player_cards) <= page_size:
+            for card in player_cards:
+                self.bot.send_message(ctx.message.channel, embed=card)
+        # If we find more than one page, show the page number as well
+        else:
+            page_count = (len(player_cards) + page_size - 1) / page_size
+            for i, card in enumerate(player_cards[page*page_size:(page+1)*page_size]):
+                if i==0:
+                    page_string = 'Showing page %d of %d of player cards.' % (page+1, page_count)
+                else page_string = ''
+                await self.bot.send_message(ctx.message.channel, page_string, embed=card)
+
 
     @commands.command(pass_context=True)
     async def top(self, ctx, *, n=10):
         '''Show the top n players.'''
+
+        # Make sure the input is an integer
+        try:
+            n = int(n)
+        except ValueError:
+            await self.bot.say('The number of top players to show must be an integer!')
+            return
+
+        # Make sure the number is non-negative
+        if n < 0:
+            await self.bot.say('Cannot display a negative number of top players!')
+            return
+
+        # Make sure the number doesn't exceed the configurable limit
+        if n > self.config['max_top']:
+            await self.bot.say('Maximum players to display in top rankings is %d!'\
+                    % self.config['max_top'])
+            return
 
         topn = self.user_status.sort_values('elo', ascending=False).head(n)
         title = 'Top %d Players' % n

@@ -41,7 +41,10 @@
 				"cutoff": 1500,
 				"default": false
 			}
-		]
+		],
+		"max_top": 16,
+		"max_player_cards": 4,
+		"max_match_cards": 4
 	}
 }
 
