@@ -46,9 +46,9 @@ async def on_ready():
 
 
 @bot.command()
-async def uptime():
+async def uptime(ctx):
     '''Check bot uptime.'''
-    await bot.say(str(datetime.datetime.now() - bot.startup_time))
+    await ctx.message.channel.send(datetime.datetime.now() - bot.startup_time)
 
 def load_cogs(bot, config):
     if config['elo']['enable']:

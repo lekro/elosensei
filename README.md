@@ -7,8 +7,8 @@ MissileWars on CubeKrowd, but should also be able to accommodate other
 games.
 
 ## Dependencies
-* Python 3.6
-* Discord.py
+* Python >= 3.5
+* Discord.py >= 1.0.0
 * pandas
 
 ## License

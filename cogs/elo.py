@@ -37,7 +37,7 @@ class Elo:
             user_status.loc[player] = dict(name=None, elo=self.config['default_elo'], wins=0, losses=0, matches_played=0, rank=None, color=None)
             return self.config['default_elo']
 
-    async def recalculate_elo(self):
+    async def recalculate_elo(self, ctx):
         
         # Reinstantiate user status
         user_status = pd.DataFrame(columns=self.user_status.columns)
@@ -52,7 +52,7 @@ class Elo:
             match['elo'] = match['playerID'].apply(lambda p: self.get_elo(user_status, p))
         
             # Update the user status for each player
-            user_status = await self.update_players(match, user_status)
+            user_status = await self.update_players(ctx, match, user_status)
 
             # Grab the new elo
             match = match.merge(user_status.reset_index()[['playerID', 'elo']].rename(columns=dict(elo='new_elo', on='playerID')))
@@ -70,7 +70,7 @@ class Elo:
         print("New ratings:")
         print(user_status)
 
-    async def update_players(self, match_df, user_status):
+    async def update_players(self, ctx, match_df, user_status):
         team_elo = match_df.groupby('team')[['elo']].sum()
 
         print(team_elo)
@@ -93,19 +93,19 @@ class Elo:
         # If allowing only defined status values, we might have NaN values in there...
         # Fail if that happens..
         if team_elo['actual'].isnull().any():
-            await self.bot.say('Unknown team status! Try one of '+
+            await ctx.message.channel.send('Unknown team status! Try one of '+
                                (', ').join(self.config['status_values'].keys()) + '!')
             return None
 
         # If score limit must be met exactly...
         if self.config['require_score_limit'] and team_elo['actual'].sum() != self.config['score_limit']:
             print(team_elo['actual'].sum())
-            await self.bot.say('Not enough/too many teams are winning/losing!')
+            await ctx.message.channel.send('Not enough/too many teams are winning/losing!')
             return None
 
         # Limit total score
         if team_elo['actual'].sum() > self.config['score_limit']:
-            await self.bot.say('Maximum score exceeded! Make sure the teams are not all winning!')
+            await ctx.message.channel.send('Maximum score exceeded! Make sure the teams are not all winning!')
             return None
 
         k_factor = self.config['k_factor']
@@ -151,7 +151,7 @@ class Elo:
                 return self.config['default_status_value']
         
 
-    @commands.command(pass_context=True)
+    @commands.command()
     async def match(self, ctx, *, args: str):
         '''Record a match into the system.
 
@@ -217,7 +217,7 @@ class Elo:
         if len(split_time) > 1 and timestamp == time_now:
             # Complain here!
             print('failed to parse timestamp')
-            await self.bot.say('Couldn\'t parse timestamp! Make sure you follow the format!\n'
+            await ctx.message.channel.send('Couldn\'t parse timestamp! Make sure you follow the format!\n'
                          '(the timestamp should be formatted YYYY-mm-dd HH-mm-ss with '
                          '24 hour time.)')
             return
@@ -240,7 +240,7 @@ class Elo:
                 # The user id should be an integer as a string...
                 # We could optionally query discord, but that takes an annoying
                 # amount of time.
-                int(user_id)
+                user_id = int(user_id)
                 print('User id found: %s' % user_id)
 
                 # Since this is a user id, start a new team if necessary:
@@ -254,14 +254,14 @@ class Elo:
                     users_seen.append(user_id)
                 else:
                     # We are getting a duplicate user.
-                    await self.bot.say('The same user was repeated multiple times!')
+                    await ctx.message.channel.send('The same user was repeated multiple times!')
                     return
             except:
                 # So if this isn't a user id, it must be the team status.
 
                 # If we just finished a team, this is an extraneous argument!
                 if done_with_team:
-                    await self.bot.say('Extraneous arguments detected while parsing teams!\n'
+                    await ctx.message.channel.send('Extraneous arguments detected while parsing teams!\n'
                                        'Make sure you use valid @mentions for all players '
                                        'and only specify `win` or `loss` after the list of '
                                        'players!')
@@ -275,7 +275,7 @@ class Elo:
         # If we haven't completed all the teams (all teams must terminate with a team status)
         # then we've gotta complain!
         if not done_with_team:
-            await self.bot.say('Team not completed! Make sure to terminate the teams with a team status!\n'
+            await ctx.message.channel.send('Team not completed! Make sure to terminate the teams with a team status!\n'
                          '(try putting win or loss after the list of team members)')
             return
             
@@ -294,16 +294,16 @@ class Elo:
 
         # Make sure there are actually at least 2 teams.
         if match_df['team'].nunique() < 2:
-            await self.bot.say('Need at least 2 teams for a match!')
+            await ctx.message.channel.send('Need at least 2 teams for a match!')
             return
 
         if match_df['team'].nunique() > self.config['max_teams']:
-            await self.bot.say('Too many teams in this match!')
+            await ctx.message.channel.send('Too many teams in this match!')
             return
 
         # update elo rating of player and wins/losses,
         # by calling another function
-        new_user_status = await self.update_players(match_df, self.user_status)
+        new_user_status = await self.update_players(ctx, match_df, self.user_status)
         if new_user_status is not None:
             self.user_status = new_user_status
         else:
@@ -325,7 +325,7 @@ class Elo:
         # Sometimes there are circular references within dataframes? so we have to
         # invoke the gc
         gc.collect()
-        await self.bot.say('Added match!')
+        await ctx.message.channel.send('Added match!')
         await self.show_match(ctx, timestamp)
 
     async def show_match(self, ctx, timestamp):
@@ -350,7 +350,7 @@ class Elo:
             for i, t in team_members.iterrows():
                 field_value += '*%s* (%d -> %d)\n' % (self.user_status.loc[t['playerID'], 'name'], round(t['elo']), round(t['new_elo']))
             embed.add_field(name=field_name, value=field_value)
-        return await self.bot.send_message(ctx.message.channel, embed=embed)
+        return await ctx.message.channel.send(embed=embed)
 
     async def get_player_card(self, ctx, user_id):
         '''Get an Embed describing the player's stats.
@@ -361,7 +361,10 @@ class Elo:
         user_id is of the player whose stats are to be shown.
         '''
 
-        uinfo = self.user_status.loc[user_id]
+        if user_id in self.user_status.index:
+            uinfo = self.user_status.loc[user_id]
+        else:
+            return None
         try:
             avatar = ctx.message.server.get_member(user_id).avatar_url
         except:
@@ -380,13 +383,13 @@ class Elo:
         return embed
 
 
-    @commands.command(pass_context=True)
+    @commands.command()
     async def recalculate(self, ctx):
         '''Recalculate elo ratings from scratch.'''
-        await self.recalculate_elo()
-        await self.bot.say('Recalculated elo ratings!')
+        await self.recalculate_elo(ctx)
+        await ctx.message.channel.send('Recalculated elo ratings!')
 
-    @commands.command(pass_context=True)
+    @commands.command()
     async def player(self, ctx, *, name=None):
         '''Show a player's Elo profile.
 
@@ -422,21 +425,25 @@ class Elo:
             # Process mentions 
             if len(ctx.message.mentions) > 0:
                 for mention in ctx.message.mentions:
-                    player_cards.append(await self.get_player_card(ctx, mention.id))
+                    card = await self.get_player_card(ctx, mention.id)
+                    if card is not None:
+                        player_cards.append(card)
         else:
             # Process self
-            player_cards.append(await self.get_player_card(ctx, ctx.message.author.id))
+            card = await self.get_player_card(ctx, ctx.message.author.id)
+            if card is not None:
+                player_cards.append(card)
 
         # If we found no players, tell the caller that!
         if len(player_cards) == 0:
-            await self.bot.say('Couldn\'t find any players!')
+            await ctx.message.channel.send('Couldn\'t find any players!')
             return
 
         page_size = self.config['max_player_cards']
         # If we find only one page of players, just output them.
         if len(player_cards) <= page_size:
             for card in player_cards:
-                self.bot.send_message(ctx.message.channel, embed=card)
+                await ctx.message.channel.send(embed=card)
         # If we find more than one page, show the page number as well
         else:
             page_count = (len(player_cards) + page_size - 1) / page_size
@@ -445,10 +452,10 @@ class Elo:
                     page_string = 'Showing page %d of %d of player cards.' % (page+1, page_count)
                 else:
                     page_string = ''
-                await self.bot.send_message(ctx.message.channel, page_string, embed=card)
+                await ctx.message.channel.send(page_string, embed=card)
 
 
-    @commands.command(pass_context=True)
+    @commands.command()
     async def top(self, ctx, *, n=10):
         '''Show the top n players.'''
 
@@ -456,17 +463,17 @@ class Elo:
         try:
             n = int(n)
         except ValueError:
-            await self.bot.say('The number of top players to show must be an integer!')
+            await ctx.message.channel.send('The number of top players to show must be an integer!')
             return
 
         # Make sure the number is non-negative
         if n < 0:
-            await self.bot.say('Cannot display a negative number of top players!')
+            await ctx.message.channel.send('Cannot display a negative number of top players!')
             return
 
         # Make sure the number doesn't exceed the configurable limit
         if n > self.config['max_top']:
-            await self.bot.say('Maximum players to display in top rankings is %d!'\
+            await ctx.message.channel.send('Maximum players to display in top rankings is %d!'\
                     % self.config['max_top'])
             return
 
@@ -478,6 +485,6 @@ class Elo:
             desc += '%d. %s (%s, %d)\n' % (i+1, uinfo['name'], uinfo['rank'], round(uinfo['elo']))
         embed = discord.Embed(title=title, type='rich', description=desc)
 
-        return await self.bot.send_message(ctx.message.channel, embed=embed)
+        return await ctx.message.channel.send(embed=embed)
 
 
