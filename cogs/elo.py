@@ -73,8 +73,9 @@ class Elo:
     async def update_players(self, match_df, user_status):
         team_elo = match_df.groupby('team')[['elo']].sum()
 
-        print(match_df)
-        team_elo['status'] = match_df.set_index('team')['status']
+        print(team_elo)
+        team_elo['status'] = match_df.groupby('team').head(1).set_index('team')['status']
+        print(team_elo)
 
         user_status = user_status.copy()
 
@@ -98,6 +99,7 @@ class Elo:
 
         # If score limit must be met exactly...
         if self.config['require_score_limit'] and team_elo['actual'].sum() != self.config['score_limit']:
+            print(team_elo['actual'].sum())
             await self.bot.say('Not enough/too many teams are winning/losing!')
             return None
 
@@ -441,7 +443,8 @@ class Elo:
             for i, card in enumerate(player_cards[page*page_size:(page+1)*page_size]):
                 if i==0:
                     page_string = 'Showing page %d of %d of player cards.' % (page+1, page_count)
-                else page_string = ''
+                else:
+                    page_string = ''
                 await self.bot.send_message(ctx.message.channel, page_string, embed=card)
 
 
