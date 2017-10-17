@@ -7,6 +7,15 @@ import datetime
 import gc
 import asyncio
 
+class EloError(Exception):
+    '''An error for Elo rating meant to be presented to the user nicely'''
+
+    def __init__(self, message):
+        self.message = message
+
+    def __str__(self):
+        return self.message
+
 class Elo:
     '''
     Elo rating commands from Elo-sensei
@@ -114,20 +123,17 @@ class Elo:
         # If allowing only defined status values, we might have NaN values in there...
         # Fail if that happens..
         if team_elo['actual'].isnull().any():
-            await ctx.message.channel.send('Unknown team status! Try one of '+
+            raise EloError('Unknown team status! Try one of '+
                                (', ').join(self.config['status_values'].keys()) + '!')
-            return None
 
         # If score limit must be met exactly...
         if self.config['require_score_limit'] and team_elo['actual'].sum() != self.config['score_limit']:
             print(team_elo['actual'].sum())
-            await ctx.message.channel.send('Not enough/too many teams are winning/losing!')
-            return None
+            raise EloError('Not enough/too many teams are winning/losing!')
 
         # Limit total score
         if team_elo['actual'].sum() > self.config['score_limit']:
-            await ctx.message.channel.send('Maximum score exceeded! Make sure the teams are not all winning!')
-            return None
+            raise EloError('Maximum score exceeded! Make sure the teams are not all winning!')
 
         k_factor = self.config['k_factor']
         team_elo['elo_delta'] = k_factor * (team_elo['actual'] - team_elo['expected'])
@@ -190,6 +196,13 @@ class Elo:
         This requires that the caller have permissions to manage matches.
         '''
 
+        try:
+            await self.match_command(ctx, args)
+        except EloError as e:
+            await ctx.message.channel.send(e)
+
+    async def match_command(self, ctx, args):
+
         time_now = datetime.datetime.utcnow()
         timestamp = time_now
         match_data = []
@@ -238,10 +251,9 @@ class Elo:
         if len(split_time) > 1 and timestamp == time_now:
             # Complain here!
             print('failed to parse timestamp')
-            await ctx.message.channel.send('Couldn\'t parse timestamp! Make sure you follow the format!\n'
+            raise EloError('Couldn\'t parse timestamp! Make sure you follow the format!\n'
                          '(the timestamp should be formatted YYYY-mm-dd HH-mm-ss with '
                          '24 hour time.)')
-            return
 
         teams_str = split_time[0]
         
@@ -275,18 +287,16 @@ class Elo:
                     users_seen.append(user_id)
                 else:
                     # We are getting a duplicate user.
-                    await ctx.message.channel.send('The same user was repeated multiple times!')
-                    return
+                    raise EloError('The same user was repeated multiple times!')
             except ValueError:
                 # So if this isn't a user id, it must be the team status.
 
                 # If we just finished a team, this is an extraneous argument!
                 if done_with_team:
-                    await ctx.message.channel.send('Extraneous arguments detected while parsing teams!\n'
+                    raise EloError('Extraneous arguments detected while parsing teams!\n'
                                        'Make sure you use valid @mentions for all players '
                                        'and only specify `win` or `loss` after the list of '
                                        'players!')
-                    return
 
                 print('Status found: %s' % member_str)
                 team_status = member_str
@@ -296,9 +306,8 @@ class Elo:
         # If we haven't completed all the teams (all teams must terminate with a team status)
         # then we've gotta complain!
         if not done_with_team:
-            await ctx.message.channel.send('Team not completed! Make sure to terminate the teams with a team status!\n'
+            raise EloError('Team not completed! Make sure to terminate the teams with a team status!\n'
                          '(try putting win or loss after the list of team members)')
-            return
             
         self.user_status_lock.acquire()
         for team in teams.keys():
@@ -319,12 +328,10 @@ class Elo:
 
         # Make sure there are actually at least 2 teams.
         if match_df['team'].nunique() < 2:
-            await ctx.message.channel.send('Need at least 2 teams for a match!')
-            return
+            raise EloError('Need at least 2 teams for a match!')
 
         if match_df['team'].nunique() > self.config['max_teams']:
-            await ctx.message.channel.send('Too many teams in this match!')
-            return
+            raise EloError('Too many teams in this match!')
 
         # update elo rating of player and wins/losses,
         # by calling another function
@@ -356,7 +363,6 @@ class Elo:
         # Sometimes there are circular references within dataframes? so we have to
         # invoke the gc
         gc.collect()
-        await ctx.message.channel.send('Added match!')
         await self.show_match(ctx, timestamp)
 
     async def show_match(self, ctx, timestamp):
@@ -421,22 +427,13 @@ class Elo:
     @commands.command()
     async def recalculate(self, ctx):
         '''Recalculate elo ratings from scratch.'''
-        await self.recalculate_elo(ctx)
-        await ctx.message.channel.send('Recalculated elo ratings!')
+        try:
+            await self.recalculate_elo(ctx)
+            await ctx.message.channel.send('Recalculated elo ratings!')
+        except EloError as e:
+            await ctx.message.channel.send(e)
 
-    @commands.command()
-    async def player(self, ctx, *, name=None):
-        '''Show a player's Elo profile.
-
-        Players can be searched by the beginning of their name, or by mentioning
-        them. If no search query is present, the caller's (your) player card
-        will be shown, if any.
-
-        For example, `elo! player lekro` will display the profile of all
-        players whose names start with 'lekro'. 
-
-        You can also @mention user(s).
-        '''
+    async def player_command(self, ctx, name=None):
 
         # For now, we'll only search the database of known users. 
         # But we can also check the server itself.
@@ -471,8 +468,7 @@ class Elo:
 
         # If we found no players, tell the caller that!
         if len(player_cards) == 0:
-            await ctx.message.channel.send('Couldn\'t find any players!')
-            return
+            raise EloError('Couldn\'t find any players!')
 
         page_size = self.config['max_player_cards']
         # If we find only one page of players, just output them.
@@ -482,6 +478,7 @@ class Elo:
         # If we find more than one page, show the page number as well
         else:
             page_count = (len(player_cards) + page_size - 1) / page_size
+            # Iterate through the player cards only in the page we want...
             for i, card in enumerate(player_cards[page*page_size:(page+1)*page_size]):
                 if i==0:
                     page_string = 'Showing page %d of %d of player cards.' % (page+1, page_count)
@@ -491,26 +488,50 @@ class Elo:
 
 
     @commands.command()
+    async def player(self, ctx, *, name=None):
+        '''Show a player's Elo profile.
+
+        Players can be searched by the beginning of their name, or by mentioning
+        them. If no search query is present, the caller's (your) player card
+        will be shown, if any.
+
+        For example, `elo! player lekro` will display the profile of all
+        players whose names start with 'lekro'. 
+
+        You can also @mention user(s).
+        '''
+
+        try:
+            await self.player_command(ctx, name)
+        except EloError as e:
+            await ctx.message.channel.send(e)
+
+
+    @commands.command()
     async def top(self, ctx, *, n=10):
         '''Show the top n players.'''
+
+        try:
+            await top_command(ctx, n)
+        except EloError as e:
+            await ctx.message.channel.send(e)
+
+    async def top_command(ctx, n):
 
         # Make sure the input is an integer
         try:
             n = int(n)
         except ValueError:
-            await ctx.message.channel.send('The number of top players to show must be an integer!')
-            return
+            raise EloError('The number of top players to show must be an integer!')
 
         # Make sure the number is non-negative
         if n < 0:
-            await ctx.message.channel.send('Cannot display a negative number of top players!')
-            return
+            raise EloError('Cannot display a negative number of top players!')
 
         # Make sure the number doesn't exceed the configurable limit
         if n > self.config['max_top']:
-            await ctx.message.channel.send('Maximum players to display in top rankings is %d!'\
+            raise EloError('Maximum players to display in top rankings is %d!'\
                     % self.config['max_top'])
-            return
 
         self.user_status_lock.acquire()
         topn = self.user_status.sort_values('elo', ascending=False).head(n)
