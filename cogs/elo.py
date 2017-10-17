@@ -29,13 +29,13 @@ class Elo:
         # and current users status, given paths in the config
         try:
             self.match_history = pd.read_pickle(self.config['match_history_path'])
-        except:
+        except OSError:
             # Create a new match history
-            self.match_history = pd.DataFrame(columns=['timestamp', 'playerID', 'elo', 'new_elo', 'team', 'status'])
+            self.match_history = pd.DataFrame(columns=['timestamp', 'eventID', 'playerID', 'elo', 'new_elo', 'team', 'status'])
 
         try:
             self.user_status = pd.read_pickle(self.config['user_status_path'])
-        except:
+        except OSError:
             # Create new user status
             self.user_status = pd.DataFrame(columns=['name', 'elo', 'wins', 'losses', 'matches_played', 'rank', 'color'])
             self.user_status.index.name = 'playerID'
@@ -44,7 +44,7 @@ class Elo:
             self.user_status['rank'] = self.user_status['rank'].astype('category')
 
             # Get all the possible ranks and add them to the categorical type
-            all_ranks = [rank['name'] for rank in config['ranks']]
+            all_ranks = [rank['name'] for rank in self.config['ranks']]
             self.user_status['rank'] = self.user_status['rank'].cat.add_categories(all_ranks)
 
         # Create locks to prevent race conditions during asynchronous operation
@@ -83,8 +83,8 @@ class Elo:
             match_history = match_history.append(match, ignore_index=True)
 
         # Finally, update the Elo object's match history and user status
-        self.match_history_lock.acquire()
-        self.user_status_lock.acquire()
+        await self.match_history_lock.acquire()
+        await self.user_status_lock.acquire()
         self.match_history = match_history
         self.user_status = user_status
         self.match_history_lock.release()
@@ -104,7 +104,7 @@ class Elo:
         print(team_elo)
 
         if lock is not None:
-            lock.acquire()
+            await lock.acquire()
         user_status = user_status.copy()
         if lock is not None:
             lock.release()
@@ -309,7 +309,7 @@ class Elo:
             raise EloError('Team not completed! Make sure to terminate the teams with a team status!\n'
                          '(try putting win or loss after the list of team members)')
             
-        self.user_status_lock.acquire()
+        await self.user_status_lock.acquire()
         for team in teams.keys():
             members, status = teams[team]
             for member in members:
@@ -321,8 +321,9 @@ class Elo:
                 
         
         # Create the df
-        self.match_history_lock.acquire()
+        await self.match_history_lock.acquire()
         match_df = pd.DataFrame(match_data, columns=self.match_history.columns.drop('new_elo'))
+        match_df['eventID'] = self.match_history['timestamp'].nunique() + 1
         self.match_history_lock.release()
         print(match_df)
 
@@ -337,7 +338,7 @@ class Elo:
         # by calling another function
         new_user_status = await self.update_players(ctx, match_df, self.user_status, lock=self.user_status_lock)
         if new_user_status is not None:
-            self.user_status_lock.acquire()
+            await self.user_status_lock.acquire()
             self.user_status = new_user_status
             self.user_status_lock.release()
         else:
@@ -345,15 +346,16 @@ class Elo:
             return
 
         # Update names of people mentioned here...
-        self.user_status_lock.acquire()
-        for member in ctx.message.mentions:
-            self.user_status.loc[member.id, 'name'] = member.name
+        await self.user_status_lock.acquire()
+        if len(ctx.message.mentions) > 0:
+            for member in ctx.message.mentions:
+                self.user_status.loc[member.id, 'name'] = member.name
 
         match_df = match_df.merge(self.user_status.reset_index()[['playerID', 'elo']].rename(columns=dict(elo='new_elo', on='playerID')))
         self.user_status_lock.release()
 
         # Add the new df to the match history
-        self.match_history_lock.acquire()
+        await self.match_history_lock.acquire()
         self.match_history = self.match_history.append(match_df, ignore_index=True)
         self.match_history_lock.release()
         print("current match history:")
@@ -368,10 +370,9 @@ class Elo:
     async def show_match(self, ctx, timestamp):
 
         # First try to find the match
-        self.match_history_lock.acquire()
-        match = self.match_history.set_index('timestamp')
+        await self.match_history_lock.acquire()
+        match = self.match_history.set_index('timestamp').loc[pd.Timestamp(timestamp)]
         self.match_history_lock.release()
-        match = match.loc[pd.Timestamp(timestamp)]
         if len(match) == 0:
             # We couldn't find the match!
             return False
@@ -389,6 +390,9 @@ class Elo:
             for i, t in team_members.iterrows():
                 field_value += '*%s* (%d -> %d)\n' % (self.user_status.loc[t['playerID'], 'name'], round(t['elo']), round(t['new_elo']))
             embed.add_field(name=field_name, value=field_value)
+
+        # Show eventID
+        embed.set_footer(text='#%d' % match['eventID'].iloc[0])
         return await ctx.message.channel.send(embed=embed)
 
     async def get_player_card(self, ctx, user_id):
@@ -400,7 +404,7 @@ class Elo:
         user_id is of the player whose stats are to be shown.
         '''
 
-        self.user_status_lock.acquire()
+        await self.user_status_lock.acquire()
         if user_id in self.user_status.index:
             uinfo = self.user_status.loc[user_id]
             self.user_status_lock.release()
@@ -533,7 +537,7 @@ class Elo:
             raise EloError('Maximum players to display in top rankings is %d!'\
                     % self.config['max_top'])
 
-        self.user_status_lock.acquire()
+        await self.user_status_lock.acquire()
         topn = self.user_status.sort_values('elo', ascending=False).head(n)
         self.user_status_lock.release()
         title = 'Top %d Players' % n
