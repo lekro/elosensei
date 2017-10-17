@@ -5,6 +5,7 @@ import json
 import pandas as pd
 import datetime
 import gc
+import asyncio
 
 class Elo:
     '''
@@ -18,17 +19,29 @@ class Elo:
         # We also need to load the dataframes for both the match history
         # and current users status, given paths in the config
         try:
-            self.match_history = pd.read_json(self.config['match_history_path'])
+            self.match_history = pd.read_pickle(self.config['match_history_path'])
         except:
             # Create a new match history
             self.match_history = pd.DataFrame(columns=['timestamp', 'playerID', 'elo', 'new_elo', 'team', 'status'])
 
         try:
-            self.user_status = pd.read_json(self.config['user_status_path'])
+            self.user_status = pd.read_pickle(self.config['user_status_path'])
         except:
             # Create new user status
             self.user_status = pd.DataFrame(columns=['name', 'elo', 'wins', 'losses', 'matches_played', 'rank', 'color'])
             self.user_status.index.name = 'playerID'
+
+            # Set categorical dtype for rank
+            self.user_status['rank'] = self.user_status['rank'].astype('category')
+
+            # Get all the possible ranks and add them to the categorical type
+            all_ranks = [rank['name'] for rank in config['ranks']]
+            self.user_status['rank'] = self.user_status['rank'].cat.add_categories(all_ranks)
+
+        # Create locks to prevent race conditions during asynchronous operation
+        self.user_status_lock = asyncio.Lock()
+        self.match_history_lock = asyncio.Lock()
+
 
     def get_elo(self, user_status, player):
         if player in user_status.index:
@@ -52,7 +65,7 @@ class Elo:
             match['elo'] = match['playerID'].apply(lambda p: self.get_elo(user_status, p))
         
             # Update the user status for each player
-            user_status = await self.update_players(ctx, match, user_status)
+            user_status = await self.update_players(ctx, match, user_status, lock=self.user_status_lock)
 
             # Grab the new elo
             match = match.merge(user_status.reset_index()[['playerID', 'elo']].rename(columns=dict(elo='new_elo', on='playerID')))
@@ -61,8 +74,12 @@ class Elo:
             match_history = match_history.append(match, ignore_index=True)
 
         # Finally, update the Elo object's match history and user status
+        self.match_history_lock.acquire()
+        self.user_status_lock.acquire()
         self.match_history = match_history
         self.user_status = user_status
+        self.match_history_lock.release()
+        self.user_status_lock.release()
 
         print("Recalculated elo ratings.")
         print("New match history:")
@@ -70,14 +87,18 @@ class Elo:
         print("New ratings:")
         print(user_status)
 
-    async def update_players(self, ctx, match_df, user_status):
+    async def update_players(self, ctx, match_df, user_status, lock=None):
         team_elo = match_df.groupby('team')[['elo']].sum()
 
         print(team_elo)
         team_elo['status'] = match_df.groupby('team').head(1).set_index('team')['status']
         print(team_elo)
 
+        if lock is not None:
+            lock.acquire()
         user_status = user_status.copy()
+        if lock is not None:
+            lock.release()
 
         # Take mean of every team but this one
         for index, row in team_elo.iterrows():
@@ -256,7 +277,7 @@ class Elo:
                     # We are getting a duplicate user.
                     await ctx.message.channel.send('The same user was repeated multiple times!')
                     return
-            except:
+            except ValueError:
                 # So if this isn't a user id, it must be the team status.
 
                 # If we just finished a team, this is an extraneous argument!
@@ -279,6 +300,7 @@ class Elo:
                          '(try putting win or loss after the list of team members)')
             return
             
+        self.user_status_lock.acquire()
         for team in teams.keys():
             members, status = teams[team]
             for member in members:
@@ -286,10 +308,13 @@ class Elo:
                 tm_elo = self.get_elo(self.user_status, member)
 
                 match_data.append(dict(timestamp=timestamp, playerID=member, elo=tm_elo, team=team, status=status))
+        self.user_status_lock.release()
                 
         
         # Create the df
+        self.match_history_lock.acquire()
         match_df = pd.DataFrame(match_data, columns=self.match_history.columns.drop('new_elo'))
+        self.match_history_lock.release()
         print(match_df)
 
         # Make sure there are actually at least 2 teams.
@@ -303,21 +328,27 @@ class Elo:
 
         # update elo rating of player and wins/losses,
         # by calling another function
-        new_user_status = await self.update_players(ctx, match_df, self.user_status)
+        new_user_status = await self.update_players(ctx, match_df, self.user_status, lock=self.user_status_lock)
         if new_user_status is not None:
+            self.user_status_lock.acquire()
             self.user_status = new_user_status
+            self.user_status_lock.release()
         else:
             # If we couldn't update the scores, fail!
             return
 
         # Update names of people mentioned here...
+        self.user_status_lock.acquire()
         for member in ctx.message.mentions:
             self.user_status.loc[member.id, 'name'] = member.name
 
         match_df = match_df.merge(self.user_status.reset_index()[['playerID', 'elo']].rename(columns=dict(elo='new_elo', on='playerID')))
+        self.user_status_lock.release()
 
         # Add the new df to the match history
+        self.match_history_lock.acquire()
         self.match_history = self.match_history.append(match_df, ignore_index=True)
+        self.match_history_lock.release()
         print("current match history:")
         print(self.match_history)
         print("current player ratings:")
@@ -331,7 +362,9 @@ class Elo:
     async def show_match(self, ctx, timestamp):
 
         # First try to find the match
+        self.match_history_lock.acquire()
         match = self.match_history.set_index('timestamp')
+        self.match_history_lock.release()
         match = match.loc[pd.Timestamp(timestamp)]
         if len(match) == 0:
             # We couldn't find the match!
@@ -361,9 +394,12 @@ class Elo:
         user_id is of the player whose stats are to be shown.
         '''
 
+        self.user_status_lock.acquire()
         if user_id in self.user_status.index:
             uinfo = self.user_status.loc[user_id]
+            self.user_status_lock.release()
         else:
+            self.user_status_lock.release()
             return None
         try:
             avatar = ctx.message.server.get_member(user_id).avatar_url
@@ -371,8 +407,7 @@ class Elo:
             avatar = None
 
         title = '%s (%s, %d)' % (uinfo['name'], uinfo['rank'], int(uinfo['elo']))
-        embed = discord.Embed(type='rich',
-                              color=int('0x' + uinfo['color'], base=16))
+        embed = discord.Embed(type='rich', color=int('0x' + uinfo['color'], base=16))
         if avatar:
             embed.set_author(name=title, icon_url=avatar)
         else:
@@ -477,7 +512,9 @@ class Elo:
                     % self.config['max_top'])
             return
 
+        self.user_status_lock.acquire()
         topn = self.user_status.sort_values('elo', ascending=False).head(n)
+        self.user_status_lock.release()
         title = 'Top %d Players' % n
         desc = ''
 
