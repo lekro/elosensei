@@ -31,7 +31,7 @@ class Elo:
             self.match_history = pd.read_pickle(self.config['match_history_path'])
         except OSError:
             # Create a new match history
-            self.match_history = pd.DataFrame(columns=['timestamp', 'eventID', 'playerID', 'elo', 'new_elo', 'team', 'status'])
+            self.match_history = pd.DataFrame(columns=['timestamp', 'eventID', 'playerID', 'elo', 'new_elo', 'team', 'status', 'value'])
 
         try:
             self.user_status = pd.read_pickle(self.config['user_status_path'])
@@ -68,13 +68,14 @@ class Elo:
         match_history = pd.DataFrame(columns=self.match_history.columns)
 
         # For each match...
+        await self.match_history_lock.acquire()
         for time, match in self.match_history.groupby('timestamp', as_index=False):
             match = match.copy()
             # Replace the elo rating of each player with what it should be, from the user_status
             match['elo'] = match['playerID'].apply(lambda p: self.get_elo(user_status, p))
         
             # Update the user status for each player
-            user_status = await self.update_players(ctx, match, user_status, lock=self.user_status_lock)
+            user_status = await self.update_players(ctx, match, user_status)
 
             # Grab the new elo
             match = match.merge(user_status.reset_index()[['playerID', 'elo']].rename(columns=dict(elo='new_elo', on='playerID')))
@@ -83,7 +84,6 @@ class Elo:
             match_history = match_history.append(match, ignore_index=True)
 
         # Finally, update the Elo object's match history and user status
-        await self.match_history_lock.acquire()
         await self.user_status_lock.acquire()
         self.match_history = match_history
         self.user_status = user_status
@@ -96,7 +96,32 @@ class Elo:
         print("New ratings:")
         print(user_status)
 
+    async def process_single_player_events(self, match_df, user_status, lock=None):
+
+        event = match_df.iloc[0]
+        if lock is not None:
+            await lock.acquire()
+        elo = self.get_elo(user_status, event['playerID'])
+        if event['status'] == 'delta':
+            user_status.loc[event['playerID'], 'elo'] += event['value']
+        elif event['status'] == 'set':
+            user_status.loc[event['playerID'], 'elo'] = event['value']
+
+        await self.update_rank(user_status, event['playerID'])
+        if lock is not None:
+            lock.release()
+
+        return user_status
+
+
+
     async def update_players(self, ctx, match_df, user_status, lock=None):
+
+        # If this isn't a match, process it as a single player event (e.g. score adjustment)
+        if len(match_df) == 1:
+            return await self.process_single_player_events(match_df, user_status, lock=None)
+
+        # Otherwise, continue to process it as a normal match
         team_elo = match_df.groupby('team')[['elo']].sum()
 
         print(team_elo)
