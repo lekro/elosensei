@@ -358,7 +358,7 @@ class Elo:
         await self.user_status_lock.acquire()
         if len(ctx.message.mentions) > 0:
             for member in ctx.message.mentions:
-                self.user_status.loc[member.id, 'name'] = member.name
+                self.user_status.loc[member.id, 'name'] = member.nick
 
         match_df = match_df.merge(self.user_status.reset_index()[['playerID', 'elo']].rename(columns=dict(elo='new_elo', on='playerID')))
         self.user_status_lock.release()
