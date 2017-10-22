@@ -207,11 +207,11 @@ class Elo:
     async def match(self, ctx, *, args: str):
         '''Record a match into the system.
 
-        format: match TEAM1 TEAM2 [at [YYYY]-mm-dd HH-mm]
+        format: match TEAM1 TEAM2 [at [YYYY-]mm-dd HH-mm]
 
         where TEAM# is in the format @mention1 [@mention2 ...] {win|loss|draw}
 
-        example: match @mention1 @mention2 win ! @mention3 @mention4 loss at 2017-01-01 23:01:01
+        example: match @mention1 @mention2 win @mention3 @mention4 loss at 2017-01-01 23:01
         This represents a 2v2 game, where mention1 and mention2 defeated
         mention3 and mention4.
 
