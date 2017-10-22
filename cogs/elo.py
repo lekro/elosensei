@@ -256,8 +256,13 @@ class Elo:
             # Complain here!
             print('failed to parse timestamp')
             raise EloError('Couldn\'t parse timestamp! Make sure you follow the format!\n'
-                         '(the timestamp should be formatted [YYYY]-mm-dd hh-mm with '
+                         '(the timestamp should be formatted [YYYY]-mm-dd hh:mm with '
                          '24 hour time.)')
+        #If timestamp is valid, but in the future... complain!
+        elif timestamp > time_now:
+            print('Timestamp was invalid')
+            raise EloError('I may be an amazing bot, but I can\'t record matches '
+                           'that are in the future!')
 
         teams_str = split_time[0]
         
@@ -268,12 +273,11 @@ class Elo:
         team = []
         done_with_team = False
         for member_str in teams_str.split():
-            print(member_str)
             # If we have already iterated through, that means there are extraneous
             # arguments! Notify the user that they will be ignored...
             # First make sure this is actually a valid user...
             user_id = member_str.strip('<@!>')
-            print(user_id)
+            print("Checking for user id: {}".format(user_id))
             try:
                 # The user id should be an integer as a string...
                 # We could optionally query discord, but that takes an annoying
