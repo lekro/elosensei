@@ -207,7 +207,7 @@ class Elo:
     async def match(self, ctx, *, args: str):
         '''Record a match into the system.
 
-        format: match TEAM1 TEAM2 [at YYYY-mm-dd HH-mm-ss]
+        format: match TEAM1 TEAM2 [at [YYYY]-mm-dd HH-mm]
 
         where TEAM# is in the format @mention1 [@mention2 ...] {win|loss|draw}
 
@@ -235,49 +235,28 @@ class Elo:
         split_time = args.split(sep=' at ')
         if len(split_time) > 1:
 
-            # Try various ways of formatting the time, and infer missing information.
+            '''Only accept a timestamp in the format [YYYY-]mm-dd hh:mm
+               It's just simpler so why not...'''
             # If it doesn't work, then we've gotta complain instead of silently failing!
             try:
                 # Full date and full time
-                timestamp = datetime.datetime.strptime(split_time[1], '%Y-%m-%d %H:%M:%S')
-            except ValueError:
-                pass
-            try:
-                # Full date, time without seconds
                 timestamp = datetime.datetime.strptime(split_time[1], '%Y-%m-%d %H:%M')
-            except ValueError:
-                pass
-            try:
-                # Full date only
-                timestamp = datetime.datetime.strptime(split_time[1], '%Y-%m-%d')
             except ValueError:
                 pass
             # The same without the year attached
             try:
-                # Full date and full time
-                timestamp = datetime.datetime.strptime(split_time[1], '%m-%d %H:%M:%S')
-                timestamp = timestamp.replace(year=datetime.date.today().year)
-            except ValueError:
-                pass
-            try:
-                # Full date, time without seconds
+                # Date and time but year ommited: fill in with current year
                 timestamp = datetime.datetime.strptime(split_time[1], '%m-%d %H:%M')
                 timestamp = timestamp.replace(year=datetime.date.today().year)
             except ValueError:
                 pass
-            try:
-                # Full date only
-                timestamp = datetime.datetime.strptime(split_time[1], '%m-%d')
-                timestamp = timestamp.replace(year=datetime.date.today().year)
-            except ValueError:
-                pass
-
+            
         # So if all those methods failed, we complain
         if len(split_time) > 1 and timestamp == time_now:
             # Complain here!
             print('failed to parse timestamp')
             raise EloError('Couldn\'t parse timestamp! Make sure you follow the format!\n'
-                         '(the timestamp should be formatted YYYY-mm-dd HH-mm-ss with '
+                         '(the timestamp should be formatted [YYYY]-mm-dd hh-mm with '
                          '24 hour time.)')
 
         teams_str = split_time[0]
@@ -289,10 +268,11 @@ class Elo:
         team = []
         done_with_team = False
         for member_str in teams_str.split():
+            print(member_str)
             # If we have already iterated through, that means there are extraneous
             # arguments! Notify the user that they will be ignored...
             # First make sure this is actually a valid user...
-            user_id = member_str.strip('<@>')
+            user_id = member_str.strip('<@!>')
             print(user_id)
             try:
                 # The user id should be an integer as a string...
@@ -535,18 +515,7 @@ class Elo:
         except EloError as e:
             await ctx.message.channel.send(e)
 
-
-    @commands.command()
-    async def top(self, ctx, *, n=10):
-        '''Show the top n players.'''
-
-        try:
-            await top_command(ctx, n)
-        except EloError as e:
-            await ctx.message.channel.send(e)
-
-    async def top_command(ctx, n):
-
+    async def top_command(self, ctx, n): 
         # Make sure the input is an integer
         try:
             n = int(n)
@@ -563,15 +532,26 @@ class Elo:
                     % self.config['max_top'])
 
         await self.user_status_lock.acquire()
+        print(self.user_status)
         topn = self.user_status.sort_values('elo', ascending=False).head(n)
         self.user_status_lock.release()
         title = 'Top %d Players' % n
         desc = ''
-
+        print(topn)
         for i, (uid, uinfo) in enumerate(topn.iterrows()):
+            print(i)
             desc += '%d. %s (%s, %d)\n' % (i+1, uinfo['name'], uinfo['rank'], round(uinfo['elo']))
+        print(title)
+        print(desc)
         embed = discord.Embed(title=title, type='rich', description=desc)
 
         return await ctx.message.channel.send(embed=embed)
 
+    @commands.command()
+    async def top(self, ctx, *, n=10):
+        '''Show the top n players.'''
 
+        try:
+            await self.top_command(ctx, n)
+        except EloError as e:
+            await ctx.message.channel.send(e)
