@@ -78,7 +78,7 @@ class Elo:
             user_status = await self.update_players(ctx, match, user_status)
 
             # Grab the new elo
-            match = match.merge(user_status.reset_index()[['playerID', 'elo']].rename(columns=dict(elo='new_elo', on='playerID')))
+            match = match.merge(user_status.reset_index()[['playerID', 'elo']].rename(columns=dict(elo='new_elo')), on='playerID')
 
             # Add the match to the new match history
             match_history = match_history.append(match, ignore_index=True)
