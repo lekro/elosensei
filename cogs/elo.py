@@ -425,6 +425,17 @@ class Elo:
         Display all events on 2017-01-01: show 2017-01-01
         '''
 
+        args = arg.split()
+        if len(args) > 1:
+            try:
+                page = int(args[1])-1
+                print('page requested: %d' % page)
+            except ValueError:
+                raise EloError("Page number must be an integer!")
+        else:
+            page = 0
+        arg = args[0]
+
         try:
             eventID = int(arg)
         except ValueError:
@@ -437,15 +448,13 @@ class Elo:
                 await self.match_history_lock.acquire()
                 mask = (timestamp <= self.match_history['timestamp']) & \
                         (timestamp + datetime.timedelta(days=1) > self.match_history['timestamp'])
-                timestamps = self.match_history.loc[mask, 'timestamp'].dt.to_pydatetime()
-                timestamps = list(set(timestamps))
+                timestamps = self.match_history.drop_duplicates(subset='timestamp').loc[mask, 'timestamp'].dt.to_pydatetime()
                 del mask
                 self.match_history_lock.release()
         else:
             await self.match_history_lock.acquire()
             mask = self.match_history['eventID'] == eventID
-            timestamps = self.match_history.loc[mask, 'timestamp'].dt.to_pydatetime()
-            timestamps = list(set(timestamps))
+            timestamps = self.match_history.drop_duplicates(subset='timestamp').loc[mask, 'timestamp'].dt.to_pydatetime()
             self.match_history_lock.release()
 
         if len(timestamps) < 1:
