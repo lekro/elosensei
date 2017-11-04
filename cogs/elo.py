@@ -394,8 +394,14 @@ class Elo:
 
         # Update names of people mentioned here...
         await self.user_status_lock.acquire()
-        if len(ctx.message.mentions) > 0:
-            for member in ctx.message.mentions:
+        
+        match_players = match_df['playerID'].tolist()
+        for user_id in match_players:
+            try:
+                member = ctx.guild.get_member(user_id)
+            except ValueError:
+                pass
+            else:
                 if member.nick != None:
                     self.user_status.loc[member.id, 'name'] = member.nick
                 else:
@@ -421,8 +427,11 @@ class Elo:
     async def show(self, ctx, *, arg):
         '''Display information for a match or event given a date or event ID.
 
+        show [match-id-or-time] [page]
+
         Display event with ID #14: show 14
         Display all events on 2017-01-01: show 2017-01-01
+        Display the second page of events on 2017-01-01: show 2017-01-01 2
         '''
 
         args = arg.split()
@@ -473,6 +482,8 @@ class Elo:
         # If we find more than one page, show the page number as well
         else:
             page_count = (len(event_cards) + page_size - 1) / page_size
+            if not (0 <= page < page_count):
+                raise EloError("Page index out of range!")
             # Iterate through the player cards only in the page we want...
             for i, card in enumerate(event_cards[page*page_size:(page+1)*page_size]):
                 if i==0:
@@ -537,19 +548,27 @@ class Elo:
             self.user_status_lock.release()
             return None
         try:
-            avatar = ctx.message.server.get_member(user_id).avatar_url
+            avatar = ctx.guild.get_member(user_id).avatar_url
         except:
             avatar = None
 
         title = '%s (%s, %d)' % (uinfo['name'], uinfo['rank'], int(uinfo['elo']))
-        embed = discord.Embed(type='rich', color=int('0x' + uinfo['color'], base=16))
+
+        # Construct description field
+        description = "Wins: %d / Losses: %d / Total: %d\n" % (uinfo['wins'], uinfo['losses'], uinfo['matches_played'])
+        description += "Player ID: %s\n" % user_id
+
+        # Get all matches played
+        await self.match_history_lock.acquire()
+        ids_played = self.match_history.query('playerID == %s' % user_id)['eventID'].tolist()
+        ids_played = [str(i) for i in ids_played]
+        self.match_history_lock.release()
+        description += "Events: %s\n" % (', '.join(ids_played))
+        embed = discord.Embed(type='rich', description=description, color=int('0x' + uinfo['color'], base=16))
         if avatar:
             embed.set_author(name=title, icon_url=avatar)
         else:
             embed.set_author(name=title)
-        embed.add_field(name='Wins', value=int(uinfo['wins']))
-        embed.add_field(name='Losses', value=int(uinfo['losses']))
-        embed.add_field(name='Total', value=int(uinfo['matches_played']))
         return embed
 
 
@@ -616,6 +635,8 @@ class Elo:
         # If we find more than one page, show the page number as well
         else:
             page_count = (len(player_cards) + page_size - 1) / page_size
+            if not (0 <= page < page_count):
+                raise EloError("Page index out of range!")
             # Iterate through the player cards only in the page we want...
             for i, card in enumerate(player_cards[page*page_size:(page+1)*page_size]):
                 if i==0:
