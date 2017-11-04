@@ -415,9 +415,65 @@ class Elo:
         # Sometimes there are circular references within dataframes? so we have to
         # invoke the gc
         gc.collect()
-        await self.show_match(ctx, timestamp)
+        await ctx.message.channel.send(embed=await self.get_event_embed(ctx, timestamp))
 
-    async def show_match(self, ctx, timestamp):
+    @commands.command()
+    async def show(self, ctx, *, arg):
+        '''Display information for a match or event given a date or event ID.
+
+        Display event with ID #14: show 14
+        Display all events on 2017-01-01: show 2017-01-01
+        '''
+
+        try:
+            eventID = int(arg)
+        except ValueError:
+            # Try to parse it as a date
+            try:
+                timestamp = datetime.datetime.strptime(arg, '%Y-%m-%d')
+            except ValueError:
+                raise EloError("Couldn't parse argument as event ID or date!")
+            else:
+                await self.match_history_lock.acquire()
+                mask = (timestamp <= self.match_history['timestamp']) & \
+                        (timestamp + datetime.timedelta(days=1) > self.match_history['timestamp'])
+                timestamps = self.match_history.loc[mask, 'timestamp'].dt.to_pydatetime()
+                timestamps = list(set(timestamps))
+                del mask
+                self.match_history_lock.release()
+        else:
+            await self.match_history_lock.acquire()
+            mask = self.match_history['eventID'] == eventID
+            timestamps = self.match_history.loc[mask, 'timestamp'].dt.to_pydatetime()
+            timestamps = list(set(timestamps))
+            self.match_history_lock.release()
+
+        if len(timestamps) < 1:
+            raise EloError("No events found!")
+
+        print(timestamps)
+
+        event_cards = [await self.get_event_embed(ctx, ts) for ts in timestamps]
+
+        page_size = self.config['max_match_cards']
+
+        # If we find only one page of players, just output them.
+        if len(event_cards) <= page_size:
+            for card in event_cards:
+                await ctx.message.channel.send(embed=card)
+        # If we find more than one page, show the page number as well
+        else:
+            page_count = (len(event_cards) + page_size - 1) / page_size
+            # Iterate through the player cards only in the page we want...
+            for i, card in enumerate(event_cards[page*page_size:(page+1)*page_size]):
+                if i==0:
+                    page_string = 'Showing page %d of %d of event cards.' % (page+1, page_count)
+                else:
+                    page_string = ''
+                await ctx.message.channel.send(page_string, embed=card)
+
+
+    async def get_event_embed(self, ctx, timestamp):
 
         # First try to find the match
         await self.match_history_lock.acquire()
@@ -449,7 +505,11 @@ class Elo:
 
         # Show eventID
         embed.set_footer(text='#%d' % match['eventID'].iloc[0])
-        return await ctx.message.channel.send(embed=embed)
+        return embed
+
+    async def show_events(self, ctx, timestamps):
+
+        pass
 
     async def get_player_card(self, ctx, user_id):
         '''Get an Embed describing the player's stats.
