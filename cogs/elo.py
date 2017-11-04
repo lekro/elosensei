@@ -7,6 +7,7 @@ import datetime
 import gc
 import asyncio
 
+
 class EloError(Exception):
     '''An error for Elo rating meant to be presented to the user nicely'''
 
@@ -15,6 +16,16 @@ class EloError(Exception):
 
     def __str__(self):
         return self.message
+
+async def on_command_error(ctx, error):
+    '''Global error handler which gives EloError back to the user'''
+
+    original = error.original
+
+    if isinstance(original, EloError):
+        await ctx.message.channel.send(original)
+    else:
+        raise original
 
 class Elo:
     '''
@@ -51,6 +62,8 @@ class Elo:
         self.user_status_lock = asyncio.Lock()
         self.match_history_lock = asyncio.Lock()
 
+        # Handle command errors...
+        bot.on_command_error = on_command_error
 
     def get_elo(self, user_status, player):
         if player in user_status.index:
@@ -203,7 +216,7 @@ class Elo:
                 return self.config['default_status_value']
         
 
-    @commands.command()
+    @commands.command(name='match')
     async def match(self, ctx, *, args: str):
         '''Record a match into the system.
 
@@ -211,7 +224,7 @@ class Elo:
 
         where TEAM# is in the format @mention1 [@mention2 ...] {win|loss|draw}
 
-        example: match @mention1 @mention2 win ! @mention3 @mention4 loss at 2017-01-01 23:01:01
+        example: match @mention1 @mention2 win @mention3 @mention4 loss at 2017-01-01 23:01:01
         This represents a 2v2 game, where mention1 and mention2 defeated
         mention3 and mention4.
 
@@ -221,16 +234,23 @@ class Elo:
         This requires that the caller have permissions to manage matches.
         '''
 
-        try:
-            await self.match_command(ctx, args)
-        except EloError as e:
-            await ctx.message.channel.send(e)
-
-    async def match_command(self, ctx, args):
-
         time_now = datetime.datetime.utcnow()
         timestamp = time_now
         match_data = []
+
+        # Find custom K factor, if any.
+        args = args.split(' K=')
+        if len(args) > 1:
+            # The user input a custom K factor
+            try:
+                k_factor = float(args[1])
+            except ValueError:
+                raise EloError('K factor must be a number!')
+        else:
+            # The user wants the default K factor
+            k_factor = config['k_factor']
+        # Get the first argument, ignore K factor part
+        args = args[0]
 
         split_time = args.split(sep=' at ')
         if len(split_time) > 1:
@@ -456,13 +476,22 @@ class Elo:
     @commands.command()
     async def recalculate(self, ctx):
         '''Recalculate elo ratings from scratch.'''
-        try:
-            await self.recalculate_elo(ctx)
-            await ctx.message.channel.send('Recalculated elo ratings!')
-        except EloError as e:
-            await ctx.message.channel.send(e)
+        await self.recalculate_elo(ctx)
+        await ctx.message.channel.send('Recalculated elo ratings!')
 
-    async def player_command(self, ctx, name=None):
+    @commands.command()
+    async def player(self, ctx, *, name=None):
+        '''Show a player's Elo profile.
+
+        Players can be searched by the beginning of their name, or by mentioning
+        them. If no search query is present, the caller's (your) player card
+        will be shown, if any.
+
+        For example, `elo! player lekro` will display the profile of all
+        players whose names start with 'lekro'. 
+
+        You can also @mention user(s).
+        '''
 
         # For now, we'll only search the database of known users. 
         # But we can also check the server itself.
@@ -517,35 +546,8 @@ class Elo:
 
 
     @commands.command()
-    async def player(self, ctx, *, name=None):
-        '''Show a player's Elo profile.
-
-        Players can be searched by the beginning of their name, or by mentioning
-        them. If no search query is present, the caller's (your) player card
-        will be shown, if any.
-
-        For example, `elo! player lekro` will display the profile of all
-        players whose names start with 'lekro'. 
-
-        You can also @mention user(s).
-        '''
-
-        try:
-            await self.player_command(ctx, name)
-        except EloError as e:
-            await ctx.message.channel.send(e)
-
-
-    @commands.command()
     async def top(self, ctx, *, n=10):
         '''Show the top n players.'''
-
-        try:
-            await top_command(ctx, n)
-        except EloError as e:
-            await ctx.message.channel.send(e)
-
-    async def top_command(ctx, n):
 
         # Make sure the input is an integer
         try:
