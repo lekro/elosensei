@@ -42,7 +42,7 @@ class Elo:
             self.match_history = pd.read_pickle(self.config['match_history_path'])
         except OSError:
             # Create a new match history
-            self.match_history = pd.DataFrame(columns=['timestamp', 'eventID', 'playerID', 'elo', 'new_elo', 'team', 'status', 'value'])
+            self.match_history = pd.DataFrame(columns=['timestamp', 'eventID', 'playerID', 'elo', 'new_elo', 'team', 'status', 'value', 'comment'])
 
         try:
             self.user_status = pd.read_pickle(self.config['user_status_path'])
@@ -138,7 +138,8 @@ class Elo:
         team_elo = match_df.groupby('team')[['elo']].sum()
 
         print(team_elo)
-        team_elo['status'] = match_df.groupby('team').head(1).set_index('team')['status']
+        # Bring in the first values of status and value for each team
+        team_elo[['status', 'value']] = match_df.groupby('team').head(1).set_index('team')[['status', 'value']]
         print(team_elo)
 
         if lock is not None:
@@ -173,8 +174,7 @@ class Elo:
         if team_elo['actual'].sum() > self.config['score_limit']:
             raise EloError('Maximum score exceeded! Make sure the teams are not all winning!')
 
-        k_factor = self.config['k_factor']
-        team_elo['elo_delta'] = k_factor * (team_elo['actual'] - team_elo['expected'])
+        team_elo['elo_delta'] = team_elo['value'] * (team_elo['actual'] - team_elo['expected'])
 
         print("processing one match:")
         print(team_elo)
@@ -220,13 +220,14 @@ class Elo:
     async def match(self, ctx, *, args: str):
         '''Record a match into the system.
 
-        format: match TEAM1 TEAM2 [at [YYYY-]mm-dd HH-mm]
+        format: match TEAM1 TEAM2 [at [YYYY-]mm-dd HH-mm] [K=value] ["title and comments"]
 
         where TEAM# is in the format @mention1 [@mention2 ...] {win|loss|draw}
 
-        example: match @mention1 @mention2 win @mention3 @mention4 loss at 2017-01-01 23:01
+        example: match @mention1 @mention2 win @mention3 @mention4 loss at 2017-01-01 23:01 K=55 "foo"
         This represents a 2v2 game, where mention1 and mention2 defeated
-        mention3 and mention4.
+        mention3 and mention4 at 23:01 UTC on January 1, 2017, with a
+        K factor of 55, and an occasion of foo.
 
         There must be at least two teams. The team listing must end
         with a status, for example win or loss.
@@ -237,6 +238,21 @@ class Elo:
         time_now = datetime.datetime.utcnow()
         timestamp = time_now
         match_data = []
+        
+        # Find comment, if any.
+        args = args.split('"')
+        if len(args) > 1:
+            if len(args) == 3:
+                # The user has a comment to make!
+                comment = args[1]
+            else:
+                # Mismatched quotes or multiple comments?
+                raise EloError('Comments must be enclosed in "double quotes!"')
+        else:
+            # No comment to make
+            comment = None
+        # Get first arg, ignore comments
+        args = args[0]
 
         # Find custom K factor, if any.
         args = args.split(' K=')
@@ -248,7 +264,7 @@ class Elo:
                 raise EloError('K factor must be a number!')
         else:
             # The user wants the default K factor
-            k_factor = config['k_factor']
+            k_factor = self.config['k_factor']
         # Get the first argument, ignore K factor part
         args = args[0]
 
@@ -353,6 +369,8 @@ class Elo:
         await self.match_history_lock.acquire()
         match_df = pd.DataFrame(match_data, columns=self.match_history.columns.drop('new_elo'))
         match_df['eventID'] = self.match_history['timestamp'].nunique() + 1
+        match_df['value'] = k_factor
+        match_df['comment'] = comment
         self.match_history_lock.release()
         print(match_df)
 
@@ -403,7 +421,7 @@ class Elo:
 
         # First try to find the match
         await self.match_history_lock.acquire()
-        match = self.match_history.set_index('timestamp').loc[pd.Timestamp(timestamp)]
+        match = self.match_history.set_index('timestamp').loc[pd.Timestamp(timestamp)].copy()
         self.match_history_lock.release()
         if len(match) == 0:
             # We couldn't find the match!
@@ -412,9 +430,15 @@ class Elo:
         # Now that we have the match, we pretty-print
 
         # We can set the title to something like 1v1 Match
-        title = 'v'.join(match.groupby('team')['playerID'].count().astype(str).tolist())
-        title += ' match'
-        embed = discord.Embed(title=title, type='rich', timestamp=timestamp)
+        desc_text = 'v'.join(match.groupby('team')['playerID'].count().astype(str).tolist())
+        desc_text += ' match'
+        if match['comment'].iloc[0] is not None:
+            title = match['comment'].iloc[0]
+        else:
+            title = desc_text
+
+        desc_text += ' (K=%d)' % match['value'].iloc[0]
+        embed = discord.Embed(title=title, description=desc_text, type='rich', timestamp=timestamp)
 
         for team, team_members in match.groupby('team'):
             field_name = 'Team %s (%s)' % (team, team_members['status'].iloc[0])
