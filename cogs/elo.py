@@ -136,7 +136,7 @@ class Elo:
 
         # If this isn't a match, process it as a single player event (e.g. score adjustment)
         if len(match_df) == 1:
-            return await self.process_single_player_events(match_df, user_status, lock=None)
+            return await self.process_single_player_events(match_df, user_status, lock=lock)
 
         # Otherwise, continue to process it as a normal match
         team_elo = match_df.groupby('team')[['elo']].sum()
@@ -220,6 +220,19 @@ class Elo:
                 return self.config['default_status_value']
         
     @commands.command()
+    async def set(self, ctx, user: discord.Member, value: int):
+        '''Manually set a value for a user's Elo score.
+
+        This is logged in the match history as a 'set' event.
+        format: set @mention value
+        
+        example: set @mention 1000
+        This sets mention's Elo to 1000.
+        '''
+
+        await self.add_single_player_event(ctx, user, value, 'set')
+
+    @commands.command()
     async def delta(self, ctx, user: discord.Member, value: int):
         '''Manually add/subtract a value from a user's Elo score.
 
@@ -229,6 +242,10 @@ class Elo:
         example: delta @mention -100
         This removes 100 Elo from mention.
         '''
+
+        await self.add_single_player_event(ctx, user, value, 'delta')
+
+    async def add_single_player_event(self, ctx, user, value, status):
 
         timestamp = datetime.datetime.utcnow()
         await self.match_history_lock.acquire()
@@ -242,7 +259,12 @@ class Elo:
         else:
             self.user_status_lock.release()
             return
-        # TODO update names
+
+        # Update name of player mentioned...
+        if user.nick is not None:
+            self.user_status.loc[user.id, 'name'] = user.nick
+        else:
+            self.user_status.loc[user.id, 'name'] = user.name
 
         df = df.merge(self.user_status.reset_index()[['playerID', 'elo']].rename(columns=dict(elo='new_elo')), on='playerID')
         self.user_status_lock.release()
@@ -437,7 +459,7 @@ class Elo:
             except ValueError:
                 pass
             else:
-                if member.nick != None:
+                if member.nick is not None:
                     self.user_status.loc[member.id, 'name'] = member.nick
                 else:
                     self.user_status.loc[member.id, 'name'] = member.name
