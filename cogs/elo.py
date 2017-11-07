@@ -7,6 +7,10 @@ import datetime
 import gc
 import asyncio
 
+# Store a constant dict of string->string for descriptions of 
+# things like score adjustment events
+status_map = dict(delta='Score adjustment event',
+                  set='Score set event')
 
 class EloError(Exception):
     '''An error for Elo rating meant to be presented to the user nicely'''
@@ -495,15 +499,42 @@ class Elo:
 
     async def get_event_embed(self, ctx, timestamp):
 
-        # First try to find the match
+        # First try to find the event
         await self.match_history_lock.acquire()
         match = self.match_history.set_index('timestamp').loc[pd.Timestamp(timestamp)].copy()
         self.match_history_lock.release()
         if len(match) == 0:
-            # We couldn't find the match!
+            # We couldn't find the event!
             return False
 
-        # Now that we have the match, we pretty-print
+        # Now that we have the event, we pretty-print
+        # If the length is only 1, then this is a singleplayer event.
+        if len(match) == 1:
+            return await self.get_single_player_event_embed(match)
+        else:
+            return await self.get_match_embed(match)
+
+    async def get_single_player_event_embed(self, event):
+
+        # Probably this is one of those score adjustments.
+        # TODO: find a more elegant solution to this, right
+        # now we're just hardcoding the method to get embeds 
+        # for certain events (namely singleplayer events)
+        row = event.iloc[0]
+        title = status_map[row['status']]
+
+        await self.user_status_lock.acquire()
+        author = self.user_status.loc[row['playerID'], 'name']
+        self.user_status_lock.release()
+        description = "Value: {} ({} -> {})\n".format(row['value'], row['elo'], row['new_elo'])
+        if row['comment'] is not None:
+            description += row['comment']
+        embed = discord.Embed(title=title, author=author, description=description, type='rich',
+                              timestamp=event.index[0])
+        return embed
+        
+
+    async def get_match_embed(self, match):
 
         # We can set the title to something like 1v1 Match
         desc_text = 'v'.join(match.groupby('team')['playerID'].count().astype(str).tolist())
@@ -514,22 +545,21 @@ class Elo:
             title = desc_text
 
         desc_text += ' (K=%d)' % match['value'].iloc[0]
-        embed = discord.Embed(title=title, description=desc_text, type='rich', timestamp=timestamp)
+        embed = discord.Embed(title=title, description=desc_text, type='rich', timestamp=match.index[0])
 
         for team, team_members in match.groupby('team'):
             field_name = 'Team %s (%s)' % (team, team_members['status'].iloc[0])
             field_value = ''
+            await self.user_status_lock.acquire()
             for i, t in team_members.iterrows():
                 field_value += '*%s* (%d -> %d)\n' % (self.user_status.loc[t['playerID'], 'name'], round(t['elo']), round(t['new_elo']))
+            self.user_status_lock.release()
             embed.add_field(name=field_name, value=field_value)
 
         # Show eventID
         embed.set_footer(text='#%d' % match['eventID'].iloc[0])
         return embed
 
-    async def show_events(self, ctx, timestamps):
-
-        pass
 
     async def get_player_card(self, ctx, user_id):
         '''Get an Embed describing the player's stats.
