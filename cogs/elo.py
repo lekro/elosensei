@@ -219,6 +219,37 @@ class Elo:
             else:
                 return self.config['default_status_value']
         
+    @commands.command()
+    async def delta(self, ctx, user: discord.Member, value: int):
+        '''Manually add/subtract a value from a user's Elo score.
+
+        This is logged in the match history as a 'delta' event.
+        format: delta @mention value
+        
+        example: delta @mention -100
+        This removes 100 Elo from mention.
+        '''
+
+        timestamp = datetime.datetime.utcnow()
+        await self.match_history_lock.acquire()
+        await self.user_status_lock.acquire()
+        elo = self.get_elo(self.user_status, user.id)
+        df = pd.DataFrame(dict(timestamp=timestamp, playerID=user.id, elo=elo, team=0, status='delta'))
+        self.match_history_lock.release()
+        new_user_status = await self.update_players(ctx, df, self.user_status, lock=self.user_status_lock)
+        if new_user_status is not None:
+            self.user_status = new_user_status
+        else:
+            self.user_status_lock.release()
+            return
+        # TODO update names
+
+        df = df.merge(self.user_status.reset_index()[['playerID', 'elo']].rename(columns=dict(elo='new_elo')), on='playerID')
+        self.user_status_lock.release()
+        await self.match_history_lock.acquire()
+        self.match_history = self.match_history.append(df, ignore_index=True)
+        gc.collect()
+        await ctx.message.channel.send(embed=await self.get_event_embed(ctx, timestamp))
 
     @commands.command(name='match')
     async def match(self, ctx, *, args: str):
@@ -411,7 +442,7 @@ class Elo:
                 else:
                     self.user_status.loc[member.id, 'name'] = member.name
 
-        match_df = match_df.merge(self.user_status.reset_index()[['playerID', 'elo']].rename(columns=dict(elo='new_elo', on='playerID')))
+        match_df = match_df.merge(self.user_status.reset_index()[['playerID', 'elo']].rename(columns=dict(elo='new_elo')), on='playerID')
         self.user_status_lock.release()
 
         # Add the new df to the match history
