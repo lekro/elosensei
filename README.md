@@ -12,9 +12,7 @@ games.
 * pandas
 
 ## License
-Because a decent chunk of the code is derived from Blank's sudoBot,
-which is licensed under the GNU GPL v3, Elo-sensei is also licensed
-under the GNU GPL v3.
+Elo-sensei is licensed under the GNU GPL v3.
 
 ## Thanks
 * CubeKrowd's staff and players for hosting and maintaining
