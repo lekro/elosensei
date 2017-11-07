@@ -220,7 +220,7 @@ class Elo:
                 return self.config['default_status_value']
         
     @commands.command()
-    async def set(self, ctx, user: discord.Member, value: int):
+    async def set(self, ctx, user: discord.Member, value: int, *, comment=None):
         '''Manually set a value for a user's Elo score.
 
         This is logged in the match history as a 'set' event.
@@ -230,10 +230,10 @@ class Elo:
         This sets mention's Elo to 1000.
         '''
 
-        await self.add_single_player_event(ctx, user, value, 'set')
+        await self.add_single_player_event(ctx, user, value, 'set', comment)
 
     @commands.command()
-    async def delta(self, ctx, user: discord.Member, value: int):
+    async def delta(self, ctx, user: discord.Member, value: int, *, comment=None):
         '''Manually add/subtract a value from a user's Elo score.
 
         This is logged in the match history as a 'delta' event.
@@ -243,15 +243,16 @@ class Elo:
         This removes 100 Elo from mention.
         '''
 
-        await self.add_single_player_event(ctx, user, value, 'delta')
+        await self.add_single_player_event(ctx, user, value, 'delta', comment)
 
-    async def add_single_player_event(self, ctx, user, value, status):
+    async def add_single_player_event(self, ctx, user, value, status, comment):
 
         timestamp = datetime.datetime.utcnow()
         await self.match_history_lock.acquire()
         await self.user_status_lock.acquire()
         elo = self.get_elo(self.user_status, user.id)
-        df = pd.DataFrame(dict(timestamp=timestamp, playerID=user.id, elo=elo, team=0, status='delta'))
+        df = pd.DataFrame(dict(timestamp=timestamp, playerID=user.id, elo=elo, team=0, status='delta', comment=comment),
+                          columns=self.match_history.columns.drop('new_elo'))
         self.match_history_lock.release()
         new_user_status = await self.update_players(ctx, df, self.user_status, lock=self.user_status_lock)
         if new_user_status is not None:
