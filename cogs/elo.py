@@ -599,16 +599,33 @@ class Elo:
         if name is not None:
             # Get page number to display. This will be the last part of the name,
             # if any.
+            # But we should first check if there is any whitespace...
+            # if there is no whitespace, then the name is the entire thing
+            # no matter what, even if it's a number!
 
-            try:
-                page = int(name.split()[-1])-1
-                # Remove the page number from the query
-                name = name[:name.rfind(' ')]
-            except ValueError:
-                # Assume we want to see the first page
+            spl = name.split()
+            if len(spl) <= 1:
                 page = 0
+            else:
+                try:
+                    page = int(spl[-1])-1
+                    # Remove the page number from the query
+                    name = name[:name.rfind(' ')]
+                except ValueError:
+                    # Assume we want to see the first page
+                    page = 0
 
             for i, (uid, uinfo) in enumerate(self.user_status.iterrows()):
+                # We should try and interpret this as a user ID...
+                try:
+                    arguid = int(name)
+                except ValueError:
+                    pass # just ignore if we can't parse it as an integer...
+                else:
+                    # if we could parse it as an integer, we can add the player cards...
+                    if int(uid) == arguid:
+                        player_cards.append(await self.get_player_card(ctx, uid))
+                        continue # we can skip name comparison
                 if str(uinfo['name']).lower().startswith(name.lower()):
                     player_cards.append(await self.get_player_card(ctx, uid))
             # Process mentions 
