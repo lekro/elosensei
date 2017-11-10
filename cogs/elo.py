@@ -21,6 +21,26 @@ class EloError(Exception):
     def __str__(self):
         return self.message
 
+class EloEvent(commands.Converter):
+
+    # There should be a dict here mapping event_type to functions.
+
+    async def parse_match(self, ctx, event_type, event_spec):
+        # Here, we should parse matches...
+        pass
+
+    async def parse_adjustment(self, ctx, event_type, event_spec):
+        # Parse single player events
+        pass
+
+    async def convert(self, ctx, argument):
+
+        # The first word should be the type of event.
+        # Parse that out, and determine how we want to parse 
+        # the rest of the event string accordingly.
+
+        event_type, event_spec = argument.split(maxsplit=1)
+
 async def on_command_error(ctx, error):
     '''Global error handler which gives EloError back to the user'''
 
@@ -218,6 +238,12 @@ class Elo:
                 return None
             else:
                 return self.config['default_status_value']
+
+    @commands.command()
+    async def add(self, ctx, *, event: EloEvent):
+
+        # Do stuff relating to this particular EloEvent
+        # (EloEvents are really just pandas dataframes.)
         
     @commands.command()
     async def set(self, ctx, user: discord.Member, value: int, *, comment=None):
