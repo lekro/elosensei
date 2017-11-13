@@ -29,18 +29,27 @@ def valid_datetime(s):
     object. Only accept a timestamp in the format [YYYY-]mm-dd hh:mm.
     '''
 
+    if s != str(s):
+        s = '/'.join(s)
+    else:
+        pass
+
+    print(s)
+
     timestamp = None
 
     try:
         # Full date and full time
-        timestamp = datetime.datetime.strptime(split_time[1], '%Y-%m-%d %H:%M')
+        timestamp = datetime.datetime.strptime(s, '%Y-%m-%d/%H:%M')
+        return timestamp
     except ValueError:
         pass
     # The same without the year attached
     try:
         # Date and time but year ommited: fill in with current year
-        timestamp = datetime.datetime.strptime(split_time[1], '%m-%d %H:%M')
+        timestamp = datetime.datetime.strptime(s, '%m-%d/%H:%M')
         timestamp = timestamp.replace(year=datetime.date.today().year)
+        return timestamp
     except ValueError:
         pass
 
@@ -51,22 +60,26 @@ def valid_datetime(s):
         raise argparse.ArgumentTypeError('Invalid timestamp format! '
                 '(Valid formats are [YYYY-]mm-dd hh:mm in 24-hour UTC time.)')
 
-    return timestamp
-
 class EloEventConverter(commands.Converter):
 
+    # Set up a subclass of ArgumentParser so we can get errors...
+    class EloArgumentParser(argparse.ArgumentParser):
+
+        def error(self, message):
+            raise EloError(message)
+
     # Set up argument parsers
-    match_parser = argparse.ArgumentParser()
+    match_parser = EloArgumentParser()
     match_parser.add_argument('match', nargs='+')
     match_parser.add_argument('--k-factor', '-k', type=int)
     match_parser.add_argument('--comment', '-c')
-    match_parser.add_argument('--timestamp', '-t', nargs='+', type=valid_datetime)
+    match_parser.add_argument('--timestamp', '-t', type=valid_datetime)
 
-    adjustment_parser = argparse.ArgumentParser()
+    adjustment_parser = EloArgumentParser()
     adjustment_parser.add_argument('player')
     adjustment_parser.add_argument('value', type=int)
     adjustment_parser.add_argument('--comment', '-c')
-    adjustment_parser.add_argument('--timestamp', '-t', nargs='+', type=valid_datetime)
+    adjustment_parser.add_argument('--timestamp', '-t', type=valid_datetime)
 
     def __init__(self):
 
@@ -113,6 +126,9 @@ class EloEventConverter(commands.Converter):
         # Have our handy parser parse everything but the teams...
         args = self.match_parser.parse_args(shlex.split(event_spec))
 
+        if args.timestamp is None:
+            timestamp = datetime.datetime.utcnow()
+
         # Manually parse teams
         teams = []
         team = []
@@ -121,11 +137,11 @@ class EloEventConverter(commands.Converter):
             if elem in self.config['status_values']:
                 # This means we're done with this team!
                 for player in team:
-                    teams.append((player, team, elem))
+                    teams.append((player, team_number, elem))
                 team = []
                 team_number += 1
             else:
-                team.append((await self.parse_member(elem)).id)
+                team.append((await self.parse_user(ctx, elem)).id)
 
         if team_number < 2:
             # We got less than 2 teams! This doesn't make sense!!
@@ -137,26 +153,30 @@ class EloEventConverter(commands.Converter):
 
         # Now we can make the dataframe...
         match_df = pd.DataFrame(teams, columns=['playerID', 'team', 'status'])
-        match_df['value'] = args.k_factor
+        match_df['value'] = args.k_factor if args.k_factor is not None else self.config['k_factor']
         match_df['comment'] = args.comment
-        match_df['timestamp'] = args.timestamp
+        match_df['timestamp'] = timestamp
 
         # Disallow duplicate players
         if match_df['playerID'].duplicated().any():
             raise EloError('Players must be unique!')
 
+        print(match_df)
         return match_df
 
     async def parse_adjustment(self, ctx, event_type, event_spec):
         # Parse single player events
         args = self.adjustment_parser.parse_args(shlex.split(event_spec))
 
-        event_df = pd.DataFrame({'playerID': args.player,
-                                 'team': 0,
-                                 'status': event_type,
-                                 'value': args.value,
-                                 'comment': args.comment,
-                                 'timestamp': args.timestamp})
+        if args.timestamp is None:
+            timestamp = datetime.datetime.utcnow()
+
+        member = await self.parse_user(ctx, args.player)
+
+        event_df = pd.DataFrame([[member.id, 0, event_type, args.value,
+                                 args.comment, timestamp]],
+                                columns=['playerID', 'team', 'status',
+                                         'value', 'comment', 'timestamp'])
         return event_df
 
     async def convert(self, ctx, argument):
@@ -404,8 +424,8 @@ class Elo:
         # Update user nicks
         await self.user_status_lock.acquire()
 
-        match_players = match_df['playerID'].tolist()
-        for user_id in match_players:
+        players = event['playerID'].tolist()
+        for user_id in players:
             try:
                 member = ctx.guild.get_member(user_id)
             except ValueError:
@@ -414,16 +434,20 @@ class Elo:
                 if member.nick is not None:
                     self.user_status.loc[member.id, 'name'] = member.nick
                 else:
-                    self.user_status.loc[member.id, 'name'] = memner.name
+                    self.user_status.loc[member.id, 'name'] = member.name
 
         # Bring the new elo scores back into the match dataframe...
         event = event.merge(self.user_status.reset_index()[['playerID', 'elo']]
                 .rename(columns=dict(elo='new_elo')), on='playerID')
         self.user_status_lock.release()
 
-        # Add this event to the match history
         await self.match_history_lock.acquire()
-        self.match_history = self.match_history.append(match_df, ignore_index=True)
+
+        # Assign an eventID
+        event['eventID'] = self.match_history['timestamp'].nunique() + 1
+        
+        # Add this event to the match history
+        self.match_history = self.match_history.append(event, ignore_index=True)
         self.match_history_lock.release()
         print("current event history:")
         print(self.match_history)
@@ -432,6 +456,7 @@ class Elo:
         # Sometimes there are circular references within dataframes? so we have to
         # invoke the gc
         gc.collect()
+        timestamp = event.timestamp.iloc[0]
         await ctx.message.channel.send(embed=await self.get_event_embed(ctx, timestamp))
         
     @commands.command()
@@ -742,7 +767,7 @@ class Elo:
 
         # First try to find the event
         await self.match_history_lock.acquire()
-        match = self.match_history.set_index('timestamp').loc[pd.Timestamp(timestamp)].copy()
+        match = self.match_history.query('timestamp == @timestamp').copy()
         self.match_history_lock.release()
         if len(match) == 0:
             # We couldn't find the event!
@@ -750,7 +775,7 @@ class Elo:
 
         # Now that we have the event, we pretty-print
         # If the length is only 1, then this is a singleplayer event.
-        if len(match) == 1:
+        if len(match) == 1 or isinstance(match, pd.Series):
             return await self.get_single_player_event_embed(match)
         else:
             return await self.get_match_embed(match)
@@ -761,23 +786,34 @@ class Elo:
         # TODO: find a more elegant solution to this, right
         # now we're just hardcoding the method to get embeds 
         # for certain events (namely singleplayer events)
-        row = event.iloc[0]
+
+        if isinstance(event, pd.Series):
+            row = event
+        else:
+            row = event.iloc[0]
+
+        print(row)
         title = status_map[row['status']]
 
         await self.user_status_lock.acquire()
         author = self.user_status.loc[row['playerID'], 'name']
         self.user_status_lock.release()
-        description = "Value: {} ({} -> {})\n".format(row['value'], row['elo'], row['new_elo'])
+        description = author + '\n'
+        description += "Value: {} ({} -> {})\n".format(row['value'], row['elo'], row['new_elo'])
         if row['comment'] is not None:
             description += row['comment']
         embed = discord.Embed(title=title, author=author, description=description, type='rich',
-                              timestamp=event.index[0])
+                              timestamp=row['timestamp'])
+
+        # Show eventID
+        embed.set_footer(text='#%d' % event['eventID'].iloc[0])
         return embed
         
 
     async def get_match_embed(self, match):
 
         # We can set the title to something like 1v1 Match
+        print(match)
         desc_text = 'v'.join(match.groupby('team')['playerID'].count().astype(str).tolist())
         desc_text += ' match'
         if match['comment'].iloc[0] is not None:
@@ -786,7 +822,7 @@ class Elo:
             title = desc_text
 
         desc_text += ' (K=%d)' % match['value'].iloc[0]
-        embed = discord.Embed(title=title, description=desc_text, type='rich', timestamp=match.index[0])
+        embed = discord.Embed(title=title, description=desc_text, type='rich', timestamp=match['timestamp'].iloc[0])
 
         for team, team_members in match.groupby('team'):
             field_name = 'Team %s (%s)' % (team, team_members['status'].iloc[0])
