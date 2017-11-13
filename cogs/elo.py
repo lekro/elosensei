@@ -69,13 +69,13 @@ class EloEventConverter(commands.Converter):
             raise EloError(message)
 
     # Set up argument parsers
-    match_parser = EloArgumentParser()
+    match_parser = EloArgumentParser(prog='match')
     match_parser.add_argument('match', nargs='+')
     match_parser.add_argument('--k-factor', '-k', type=int)
     match_parser.add_argument('--comment', '-c')
     match_parser.add_argument('--timestamp', '-t', type=valid_datetime)
 
-    adjustment_parser = EloArgumentParser()
+    adjustment_parser = EloArgumentParser(prog='TYPE')
     adjustment_parser.add_argument('player')
     adjustment_parser.add_argument('value', type=int)
     adjustment_parser.add_argument('--comment', '-c')
@@ -153,7 +153,7 @@ class EloEventConverter(commands.Converter):
 
         # Now we can make the dataframe...
         match_df = pd.DataFrame(teams, columns=['playerID', 'team', 'status'])
-        match_df['value'] = args.k_factor if args.k_factor is not None else self.config['k_factor']
+        match_df['value'] = args.k_factor if args.k_factor is not None else None
         match_df['comment'] = args.comment
         match_df['timestamp'] = timestamp
 
@@ -263,7 +263,8 @@ class Elo:
 
         # For each match...
         await self.match_history_lock.acquire()
-        for time, match in self.match_history.groupby('timestamp', as_index=False):
+        hist = self.match_history.sort_values('timestamp', ascending=True)
+        for time, match in hist.groupby('timestamp', as_index=False):
             match = match.copy()
             # Replace the elo rating of each player with what it should be, from the user_status
             match['elo'] = match['playerID'].apply(lambda p: self.get_elo(user_status, p))
@@ -296,7 +297,7 @@ class Elo:
         if lock is not None:
             await lock.acquire()
         elo = self.get_elo(user_status, event['playerID'])
-        if event['status'] == 'delta':
+        if event['status'] == 'delta_inline':
             user_status.loc[event['playerID'], 'elo'] += event['value']
         elif event['status'] == 'set':
             user_status.loc[event['playerID'], 'elo'] = event['value']
@@ -306,6 +307,7 @@ class Elo:
             lock.release()
 
         return user_status
+
 
 
 
@@ -393,8 +395,8 @@ class Elo:
                 # This will become NaN in the dataframe
                 # and we can catch it later
                 return None
-            else:
                 return self.config['default_status_value']
+
 
     @commands.command()
     async def add(self, ctx, *, event: EloEventConverter()):
@@ -407,6 +409,7 @@ class Elo:
         # Fill in current elo of players...
         await self.user_status_lock.acquire()
         event['elo'] = event['playerID'].map(lambda x: self.get_elo(self.user_status, x))
+        event['value'] = event['value'].fillna(config['k_factor'])
         self.user_status_lock.release()
 
         # Now we're ready to update the players' Elo ratings...
@@ -457,7 +460,33 @@ class Elo:
         # invoke the gc
         gc.collect()
         timestamp = event.timestamp.iloc[0]
+
+        # In case the timestamp was older than the latest event, we need to recalculate
+        # elo! This event belongs somewhere in the middle of the match history,
+        # in that case.
+        if timestamp < self.match_history['timestamp'].max():
+            self.recalculate_elo(ctx)
         await ctx.message.channel.send(embed=await self.get_event_embed(ctx, timestamp))
+
+
+    @commands.command()
+    async def edit(self, ctx, eventid: int, *, event: EloEventConverter()):
+
+        await self.match_history_lock.acquire()
+        if eventid not in self.match_history['eventID']:
+            self.match_history_lock.release()
+            raise EloError("Can't edit a nonexisting event!")
+        old_event = self.match_history.query('eventID == @eventid')
+
+        event[['value','comment','timestamp']] = event[['value','comment','timestamp']]
+            .fillna(old_event[['value','comment','timestamp']])
+        new_history = self.match_history.query('eventID != @eventid').append(event)
+
+        self.match_history = new_history
+        self.match_history_lock.release()
+
+        await self.recalculate_elo(ctx)
+
         
     @commands.command()
     async def set(self, ctx, user: discord.Member, value: int, *, comment=None):
@@ -466,6 +495,29 @@ class Elo:
         This is logged in the match history as a 'set' event.
         format: set @mention value
         
+        example: set @mention 1000
+        This sets mention's Elo to 1000.
+        '''
+
+        await self.add_single_player_event(ctx, user, value, 'set', comment)
+
+    @commands.command()
+    async def delta(self, ctx, user: discord.Member, value: int, *, comment=None):
+        '''Manually add/subtract a value from a user's Elo score.
+
+        This is logged in the match history as a 'delta' event.
+        format: delta @mention value
+        
+        example: delta @mention -100
+        This removes 100 Elo from mention.
+        '''
+
+        await self.add_single_player_event(ctx, user, value, 'delta', comment)
+
+    async def add_single_player_event(self, ctx, user, value, status, comment):
+
+        timestamp = datetime.datetime.utcnow()
+        await self.match_history_lock.acquire()
         example: set @mention 1000
         This sets mention's Elo to 1000.
         '''
@@ -913,29 +965,6 @@ class Elo:
             spl = name.split()
             if len(spl) <= 1:
                 page = 0
-            else:
-                try:
-                    page = int(spl[-1])-1
-                    # Remove the page number from the query
-                    name = name[:name.rfind(' ')]
-                except ValueError:
-                    # Assume we want to see the first page
-                    page = 0
-
-            for i, (uid, uinfo) in enumerate(self.user_status.iterrows()):
-                # We should try and interpret this as a user ID...
-                try:
-                    arguid = int(name)
-                except ValueError:
-                    pass # just ignore if we can't parse it as an integer...
-                else:
-                    # if we could parse it as an integer, we can add the player cards...
-                    if int(uid) == arguid:
-                        player_cards.append(await self.get_player_card(ctx, uid))
-                        continue # we can skip name comparison
-                if str(uinfo['name']).lower().startswith(name.lower()):
-                    player_cards.append(await self.get_player_card(ctx, uid))
-            # Process mentions 
             if len(ctx.message.mentions) > 0:
                 for mention in ctx.message.mentions:
                     card = await self.get_player_card(ctx, mention.id)
