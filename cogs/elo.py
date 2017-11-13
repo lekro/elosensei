@@ -487,6 +487,18 @@ class Elo:
 
         await self.recalculate_elo(ctx)
 
+    
+    @commands.command()
+    async def delete(self, ctx, eventid: int):
+
+        await self.match_history_lock.acquire()
+        if eventid not in self.match_history['eventID']:
+            self.match_history_lock.release()
+            raise EloError("Can't delete a nonexisting event!")
+        self.match_history = self.match_history.query('eventID != @eventid')
+
+        self.match_history_lock.release()
+        await self.recalculate_elo(ctx)
         
     @commands.command()
     async def set(self, ctx, user: discord.Member, value: int, *, comment=None):
