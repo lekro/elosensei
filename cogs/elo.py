@@ -6,6 +6,8 @@ import pandas as pd
 import datetime
 import gc
 import asyncio
+import argparse
+import shlex
 
 # Store a constant dict of string->string for descriptions of 
 # things like score adjustment events
@@ -21,17 +23,141 @@ class EloError(Exception):
     def __str__(self):
         return self.message
 
-class EloEvent(commands.Converter):
 
-    # There should be a dict here mapping event_type to functions.
+def valid_datetime(s):
+    '''Try to parse a given timestamp as a datetime
+    object. Only accept a timestamp in the format [YYYY-]mm-dd hh:mm.
+    '''
+
+    timestamp = None
+
+    try:
+        # Full date and full time
+        timestamp = datetime.datetime.strptime(split_time[1], '%Y-%m-%d %H:%M')
+    except ValueError:
+        pass
+    # The same without the year attached
+    try:
+        # Date and time but year ommited: fill in with current year
+        timestamp = datetime.datetime.strptime(split_time[1], '%m-%d %H:%M')
+        timestamp = timestamp.replace(year=datetime.date.today().year)
+    except ValueError:
+        pass
+
+    # If it doesn't work, then we've gotta complain instead of silently failing!
+    # So if all those methods failed, we complain
+    if timestamp is None:
+        # Complain here!
+        raise argparse.ArgumentTypeError('Invalid timestamp format! '
+                '(Valid formats are [YYYY-]mm-dd hh:mm in 24-hour UTC time.)')
+
+    return timestamp
+
+class EloEventConverter(commands.Converter):
+
+    # Set up argument parsers
+    match_parser = argparse.ArgumentParser()
+    match_parser.add_argument('match', nargs='+')
+    match_parser.add_argument('--k-factor', '-k', type=int)
+    match_parser.add_argument('--comment', '-c')
+    match_parser.add_argument('--timestamp', '-t', nargs='+', type=valid_datetime)
+
+    adjustment_parser = argparse.ArgumentParser()
+    adjustment_parser.add_argument('player')
+    adjustment_parser.add_argument('value', type=int)
+    adjustment_parser.add_argument('--comment', '-c')
+    adjustment_parser.add_argument('--timestamp', '-t', nargs='+', type=valid_datetime)
+
+    def __init__(self):
+
+        super().__init__()
+
+        # There should be a dict here mapping event_type to functions.
+        self.event_parser_map = {'match': self.parse_match,
+                            'delta': self.parse_adjustment,
+                            'delta_inline': self.parse_adjustment,
+                            'set': self.parse_adjustment}
+
+
+    async def parse_user(self, ctx, user_spec):
+        '''Convenience function for parsing users in mention,
+        id, or name format.
+
+        Requires the invocation context to call Guild
+        methods.
+        '''
+
+        # Try to see if there's a user with this name already.
+        member = ctx.guild.get_member_named(user_spec)
+        if member is not None:
+            return member
+
+        # Try to parse the user's ID if it's directly
+        # specified in chat...
+        try:
+            user_id = int(user_spec.strip('<!@>'))
+        except ValueError:
+            pass
+        else:
+            member = ctx.guild.get_member(user_id)
+            if member is not None:
+                return member
+
+        return None
+
+
 
     async def parse_match(self, ctx, event_type, event_spec):
         # Here, we should parse matches...
-        pass
+
+        # Have our handy parser parse everything but the teams...
+        args = self.match_parser.parse_args(shlex.split(event_spec))
+
+        # Manually parse teams
+        teams = []
+        team = []
+        team_number = 0
+        for elem in args.match:
+            if elem in self.config['status_values']:
+                # This means we're done with this team!
+                for player in team:
+                    teams.append((player, team, elem))
+                team = []
+                team_number += 1
+            else:
+                team.append((await self.parse_member(elem)).id)
+
+        if team_number < 2:
+            # We got less than 2 teams! This doesn't make sense!!
+            raise EloError("Need at least 2 teams for a match!")
+
+        if team_number > self.config['max_teams']:
+            # We got too many teams!
+            raise EloError("Too many teams in this match!")
+
+        # Now we can make the dataframe...
+        match_df = pd.DataFrame(teams, columns=['playerID', 'team', 'status'])
+        match_df['value'] = args.k_factor
+        match_df['comment'] = args.comment
+        match_df['timestamp'] = args.timestamp
+
+        # Disallow duplicate players
+        if match_df['playerID'].duplicated().any():
+            raise EloError('Players must be unique!')
+
+        return match_df
 
     async def parse_adjustment(self, ctx, event_type, event_spec):
         # Parse single player events
-        pass
+        args = self.adjustment_parser.parse_args(shlex.split(event_spec))
+
+        event_df = pd.DataFrame({'playerID': args.player,
+                                 'team': 0,
+                                 'status': event_type,
+                                 'value': args.value,
+                                 'comment': args.comment,
+                                 'timestamp': args.timestamp})
+        return event_df
 
     async def convert(self, ctx, argument):
 
@@ -39,17 +165,26 @@ class EloEvent(commands.Converter):
         # Parse that out, and determine how we want to parse 
         # the rest of the event string accordingly.
 
+        self.config = ctx.bot.elo_config
+
         event_type, event_spec = argument.split(maxsplit=1)
+
+        if event_type not in self.event_parser_map.keys():
+            raise EloError('Unknown event type!')
+        return await self.event_parser_map[event_type](ctx, event_type, event_spec)
 
 async def on_command_error(ctx, error):
     '''Global error handler which gives EloError back to the user'''
 
-    original = error.original
+    if hasattr(error, 'original'):
+        original = error.original
 
-    if isinstance(original, EloError):
-        await ctx.message.channel.send(original)
+        if isinstance(original, EloError):
+            await ctx.message.channel.send(original)
+        else:
+            raise original
     else:
-        raise original
+        raise error
 
 class Elo:
     '''
@@ -85,6 +220,8 @@ class Elo:
         # Create locks to prevent race conditions during asynchronous operation
         self.user_status_lock = asyncio.Lock()
         self.match_history_lock = asyncio.Lock()
+
+        bot.elo_config = self.config
 
         # Handle command errors...
         bot.on_command_error = on_command_error
@@ -240,10 +377,62 @@ class Elo:
                 return self.config['default_status_value']
 
     @commands.command()
-    async def add(self, ctx, *, event: EloEvent):
+    async def add(self, ctx, *, event: EloEventConverter()):
+        '''Add an event to the match history.'''
 
-        # Do stuff relating to this particular EloEvent
-        # (EloEvents are really just pandas dataframes.)
+        # We should have already gotten a dataframe as event,
+        # since we wrote EloEventConverter, which should have
+        # already parsed the event...
+        
+        # Fill in current elo of players...
+        await self.user_status_lock.acquire()
+        event['elo'] = event['playerID'].map(lambda x: self.get_elo(self.user_status, x))
+        self.user_status_lock.release()
+
+        # Now we're ready to update the players' Elo ratings...
+        new_user_status = await self.update_players(ctx, event, self.user_status,
+                                                    lock=self.user_status_lock)
+
+        # If the update was successful, update the Elo ratings of all players
+        if new_user_status is not None:
+            await self.user_status_lock.acquire()
+            self.user_status = new_user_status
+            self.user_status_lock.release()
+        else:
+            return
+
+        # Update user nicks
+        await self.user_status_lock.acquire()
+
+        match_players = match_df['playerID'].tolist()
+        for user_id in match_players:
+            try:
+                member = ctx.guild.get_member(user_id)
+            except ValueError:
+                pass
+            else:
+                if member.nick is not None:
+                    self.user_status.loc[member.id, 'name'] = member.nick
+                else:
+                    self.user_status.loc[member.id, 'name'] = memner.name
+
+        # Bring the new elo scores back into the match dataframe...
+        event = event.merge(self.user_status.reset_index()[['playerID', 'elo']]
+                .rename(columns=dict(elo='new_elo')), on='playerID')
+        self.user_status_lock.release()
+
+        # Add this event to the match history
+        await self.match_history_lock.acquire()
+        self.match_history = self.match_history.append(match_df, ignore_index=True)
+        self.match_history_lock.release()
+        print("current event history:")
+        print(self.match_history)
+        print("current player ratings:")
+        print(self.user_status)
+        # Sometimes there are circular references within dataframes? so we have to
+        # invoke the gc
+        gc.collect()
+        await ctx.message.channel.send(embed=await self.get_event_embed(ctx, timestamp))
         
     @commands.command()
     async def set(self, ctx, user: discord.Member, value: int, *, comment=None):
@@ -353,36 +542,8 @@ class Elo:
         args = args[0]
 
         split_time = args.split(sep=' at ')
-        if len(split_time) > 1:
 
-            '''Only accept a timestamp in the format [YYYY-]mm-dd hh:mm
-               It's just simpler so why not...'''
-            # If it doesn't work, then we've gotta complain instead of silently failing!
-            try:
-                # Full date and full time
-                timestamp = datetime.datetime.strptime(split_time[1], '%Y-%m-%d %H:%M')
-            except ValueError:
-                pass
-            # The same without the year attached
-            try:
-                # Date and time but year ommited: fill in with current year
-                timestamp = datetime.datetime.strptime(split_time[1], '%m-%d %H:%M')
-                timestamp = timestamp.replace(year=datetime.date.today().year)
-            except ValueError:
-                pass
             
-        # So if all those methods failed, we complain
-        if len(split_time) > 1 and timestamp == time_now:
-            # Complain here!
-            print('failed to parse timestamp')
-            raise EloError('Couldn\'t parse timestamp! Make sure you follow the format!\n'
-                         '(the timestamp should be formatted [YYYY]-mm-dd hh:mm with '
-                         '24 hour time.)')
-        #If timestamp is valid, but in the future... complain!
-        elif timestamp > time_now:
-            print('Timestamp was invalid')
-            raise EloError('I may be an amazing bot, but I can\'t record matches '
-                           'that are in the future!')
 
         teams_str = split_time[0]
         
