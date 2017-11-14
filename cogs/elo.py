@@ -468,6 +468,27 @@ class Elo:
         user_status.loc[uid, 'rank'] = max_rank['name']
         user_status.loc[uid, 'color'] = max_rank['color']
 
+        # Check if we have the permission to manipulate discord roles
+        if ctx.guild.me.permissions_in(ctx.message.channel).manage_roles:
+            # We are allowed to manipulate roles
+            # Get all rank names
+            all_ranks = [r['name'] for r in self.config['ranks']]
+
+            # Remove current role by name
+            member = ctx.guild.get_member(uid)
+            roles = member.roles
+            roles = [r for r in roles if r.name not in all_ranks]
+
+            # Find desired role by name
+            for role in ctx.guild.roles:
+                if role.name == max_rank['name']:
+                    # We found the right role
+                    roles.append(role)
+
+            # Edit user to change roles
+            await member.edit(roles=roles)
+
+
     def get_status_value(self, status):
         try:
             return self.config['status_values'][status]
