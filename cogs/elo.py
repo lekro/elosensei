@@ -61,6 +61,36 @@ def valid_datetime(s):
         raise argparse.ArgumentTypeError('Invalid timestamp format! '
                 '(Valid formats are [YYYY-]mm-dd hh:mm in 24-hour UTC time.)')
 
+async def has_player_perms(ctx):
+    # Return True if the caller has permission
+    # to run queries
+
+    # If the player is an admin, return true. (admin perms are a superset of players')
+    if await has_admin_perms(ctx):
+        return True
+    # If the player is not an admin, but needs admin permission, then return false
+    if ctx.bot.elo_config['queries_need_admin_perms']:
+        return False
+    # If the player needs a special role, then check for that role
+    if ctx.bot.elo_config['player_perms_need_role']:
+        for role in ctx.message.author.roles:
+            if ctx.bot.elo_config['player_role_name'] == role.name:
+                return True
+
+        return False
+    # Otherwise, return true
+    return True
+
+async def has_admin_perms(ctx):
+    # Return True of the caller has permission
+    # to add, mutate, delete...
+
+    for role in ctx.message.author.roles:
+        if ctx.bot.elo_config['admin_role_name'] == role.name:
+            return True
+    return False
+
+
 class EloEventConverter(commands.Converter):
 
     # Set up a subclass of ArgumentParser so we can get errors...
@@ -249,18 +279,6 @@ class Elo:
         # Handle command errors...
         bot.on_command_error = on_command_error
 
-    async def has_player_perms(self, ctx):
-        # Return True if the caller has permission
-        # to run queries
-        # TODO implement this function
-        return True
-    
-    async def has_admin_perms(self, ctx):
-        # Return True of the caller has permission
-        # to add, mutate, delete...
-        # TODO implement this function
-        return True
-
     def get_elo(self, user_status, player):
         if player in user_status.index:
             return user_status.loc[player, 'elo']
@@ -425,7 +443,7 @@ class Elo:
 
 
     @commands.command()
-    @commands.check(self.has_admin_perms)
+    @commands.check(has_admin_perms)
     async def add(self, ctx, *, event: EloEventConverter()):
         '''Add an event to the match history.'''
 
@@ -497,7 +515,7 @@ class Elo:
 
 
     @commands.command()
-    @commands.check(self.has_admin_perms)
+    @commands.check(has_admin_perms)
     async def edit(self, ctx, eventid: int, *, event: EloEventConverter()):
 
         await self.match_history_lock.acquire()
@@ -517,7 +535,7 @@ class Elo:
 
     
     @commands.command()
-    @commands.check(self.has_admin_perms)
+    @commands.check(has_admin_perms)
     async def delete(self, ctx, eventid: int):
 
         await self.match_history_lock.acquire()
@@ -531,7 +549,7 @@ class Elo:
 
 
     @commands.command()
-    @commands.check(self.has_player_perms)
+    @commands.check(has_player_perms)
     async def show(self, ctx, *, arg):
         '''Display information for a match or event given a date or event ID.
 
@@ -723,14 +741,14 @@ class Elo:
 
 
     @commands.command()
-    @commands.check(self.has_admin_perms)
+    @commands.check(has_admin_perms)
     async def recalculate(self, ctx):
         '''Recalculate elo ratings from scratch.'''
         await self.recalculate_elo(ctx)
         await ctx.message.channel.send('Recalculated elo ratings!')
 
     @commands.command()
-    @commands.check(self.has_player_perms)
+    @commands.check(has_player_perms)
     async def player(self, ctx, *, name=None):
         '''Show a player's Elo profile.
 
@@ -793,7 +811,7 @@ class Elo:
 
 
     @commands.command()
-    @commands.check(self.has_player_perms)
+    @commands.check(has_player_perms)
     async def top(self, ctx, *, n=10):
         '''Show the top n players.'''
 
