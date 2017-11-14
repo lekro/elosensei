@@ -50,6 +50,34 @@ async def uptime(ctx):
     '''Check bot uptime.'''
     await ctx.message.channel.send(datetime.datetime.now() - bot.startup_time)
 
+
+@bot.command
+async def about(ctx):
+    '''Get information about the bot.'''
+    
+    bot_info = '''Elo-sensei is a Discord bot aiming to automate
+    the computation of Elo ratings for players in a Discord guild.
+    It has been designed for use with ranked MissileWars on CubeKrowd,
+    but aims to act as a general-purpose Elo rating bot.
+
+    A manual is available at https://github.com/lekro/elosensei/wiki
+    The source code is available at https://github.com/lekro/elosensei
+
+    LEGAL:
+    Copyright 2017, lekro and Elo-sensei contributors. Licensed under
+    the GNU GPLv3.
+
+    Elo-sensei collects and stores user information, including but
+    not limited to usernames, nicknames, roles and other Discord
+    and game related information. However, no messages are stored 
+    except information derived from messages prefixed with the
+    bot prefix as provided in the configuration files. Voice-related
+    information is not collected at all.
+    '''
+
+    # Enclose in backticks and send
+    ctx.message.channel.send('```' + bot_info + '```')
+
 def load_cogs(bot, config):
     if config['elo']['enable']:
         bot.add_cog(cogs.elo.Elo(bot, config))
