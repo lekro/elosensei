@@ -11,8 +11,9 @@ import shlex
 
 # Store a constant dict of string->string for descriptions of 
 # things like score adjustment events
-status_map = dict(delta='Score adjustment event',
-                  set='Score set event')
+status_map = dict(delta='Score mask',
+                  delta_inline='Elo delta',
+                  set='Elo set')
 
 class EloError(Exception):
     '''An error for Elo rating meant to be presented to the user nicely'''
@@ -409,7 +410,7 @@ class Elo:
         # Fill in current elo of players...
         await self.user_status_lock.acquire()
         event['elo'] = event['playerID'].map(lambda x: self.get_elo(self.user_status, x))
-        event['value'] = event['value'].fillna(config['k_factor'])
+        event['value'] = event['value'].fillna(self.config['k_factor'])
         self.user_status_lock.release()
 
         # Now we're ready to update the players' Elo ratings...
@@ -478,7 +479,7 @@ class Elo:
             raise EloError("Can't edit a nonexisting event!")
         old_event = self.match_history.query('eventID == @eventid')
 
-        event[['value','comment','timestamp']] = event[['value','comment','timestamp']]
+        event[['value','comment','timestamp']] = event[['value','comment','timestamp']]\
             .fillna(old_event[['value','comment','timestamp']])
         new_history = self.match_history.query('eventID != @eventid').append(event)
 
@@ -507,29 +508,6 @@ class Elo:
         This is logged in the match history as a 'set' event.
         format: set @mention value
         
-        example: set @mention 1000
-        This sets mention's Elo to 1000.
-        '''
-
-        await self.add_single_player_event(ctx, user, value, 'set', comment)
-
-    @commands.command()
-    async def delta(self, ctx, user: discord.Member, value: int, *, comment=None):
-        '''Manually add/subtract a value from a user's Elo score.
-
-        This is logged in the match history as a 'delta' event.
-        format: delta @mention value
-        
-        example: delta @mention -100
-        This removes 100 Elo from mention.
-        '''
-
-        await self.add_single_player_event(ctx, user, value, 'delta', comment)
-
-    async def add_single_player_event(self, ctx, user, value, status, comment):
-
-        timestamp = datetime.datetime.utcnow()
-        await self.match_history_lock.acquire()
         example: set @mention 1000
         This sets mention's Elo to 1000.
         '''
