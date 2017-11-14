@@ -169,7 +169,10 @@ class EloEventConverter(commands.Converter):
                 team = []
                 team_number += 1
             else:
-                team.append((await self.parse_user(ctx, elem)).id)
+                user = await self.parse_user(ctx, elem)
+                if user is None:
+                    raise EloError("Couldn't parse user `{}`!".format(elem))
+                team.append(user.id)
 
         if team_number < 2:
             # We got less than 2 teams! This doesn't make sense!!
@@ -233,6 +236,21 @@ async def on_command_error(ctx, error):
             raise original
     elif isinstance(error, EloError):
         await ctx.message.channel.send(error);
+    elif isinstance(error, commands.errors.CheckFailure):
+        await ctx.message.channel.send("You don't have permission to execute this command!")
+    elif isinstance(error, commands.errors.CommandNotFound):
+        await ctx.message.channel.send("Unknown command! Type `elo help` for help.")
+    elif isinstance(error, commands.errors.MissingRequiredArgument):
+        await ctx.message.channel.send("Missing required argument: {}".format(error))
+    elif isinstance(error, commands.errors.BadArgument):
+        if hasattr(error, '__cause__'):
+            original = error.__cause__
+            if isinstance(original, EloError):
+                await ctx.message.channel.send(original)
+            else:
+                raise original
+        else:
+            raise error
     else:
         raise error
 
