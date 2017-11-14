@@ -228,7 +228,7 @@ class Elo:
             self.user_status = pd.read_pickle(self.config['user_status_path'])
         except OSError:
             # Create new user status
-            self.user_status = pd.DataFrame(columns=['name', 'elo', 'wins', 'losses', 'matches_played', 'rank', 'color'])
+            self.user_status = pd.DataFrame(columns=['name', 'elo', 'wins', 'losses', 'matches_played', 'rank', 'color', 'mask'])
             self.user_status.index.name = 'playerID'
 
             # Set categorical dtype for rank
@@ -251,8 +251,13 @@ class Elo:
         if player in user_status.index:
             return user_status.loc[player, 'elo']
         else:
-            user_status.loc[player] = dict(name=None, elo=self.config['default_elo'], wins=0, losses=0, matches_played=0, rank=None, color=None)
+            user_status.loc[player] = dict(name=None, elo=self.config['default_elo'], wins=0, losses=0, matches_played=0, rank=None, color=None, mask=0)
             return self.config['default_elo']
+
+
+    def get_masked_elo(self, user_status, player):
+        raw_elo = self.get_elo(user_status, player)
+        return raw_elo + user_status.loc[player, 'mask']
 
     async def recalculate_elo(self, ctx):
         
@@ -302,6 +307,8 @@ class Elo:
             user_status.loc[event['playerID'], 'elo'] += event['value']
         elif event['status'] == 'set':
             user_status.loc[event['playerID'], 'elo'] = event['value']
+        elif event['status'] == 'delta':
+            user_status.loc[event['playerID'], 'mask'] += event['value']
 
         await self.update_rank(user_status, event['playerID'])
         if lock is not None:
@@ -377,13 +384,17 @@ class Elo:
         return user_status
 
     async def update_rank(self, user_status, uid):
+        if self.config['ranks_use_raw_elo']:
+            elo = self.get_elo
+        else:
+            elo = self.get_masked_elo
         max_rank = None
         for rank in self.config['ranks']:
             if max_rank is None:
-                if user_status.loc[uid, 'elo'] > rank['cutoff'] or rank['default']:
+                if elo(user_status, uid) > rank['cutoff'] or rank['default']:
                     max_rank = rank
             else:
-                if user_status.loc[uid, 'elo'] > rank['cutoff'] and rank['cutoff'] > max_rank['cutoff']:
+                if elo(user_status, uid) > rank['cutoff'] and rank['cutoff'] > max_rank['cutoff']:
                     max_rank = rank
         user_status.loc[uid, 'rank'] = max_rank['name']
         user_status.loc[uid, 'color'] = max_rank['color']
@@ -500,240 +511,7 @@ class Elo:
 
         self.match_history_lock.release()
         await self.recalculate_elo(ctx)
-        
-    @commands.command()
-    async def set(self, ctx, user: discord.Member, value: int, *, comment=None):
-        '''Manually set a value for a user's Elo score.
 
-        This is logged in the match history as a 'set' event.
-        format: set @mention value
-        
-        example: set @mention 1000
-        This sets mention's Elo to 1000.
-        '''
-
-        await self.add_single_player_event(ctx, user, value, 'set', comment)
-
-    @commands.command()
-    async def delta(self, ctx, user: discord.Member, value: int, *, comment=None):
-        '''Manually add/subtract a value from a user's Elo score.
-
-        This is logged in the match history as a 'delta' event.
-        format: delta @mention value
-        
-        example: delta @mention -100
-        This removes 100 Elo from mention.
-        '''
-
-        await self.add_single_player_event(ctx, user, value, 'delta', comment)
-
-    async def add_single_player_event(self, ctx, user, value, status, comment):
-
-        timestamp = datetime.datetime.utcnow()
-        await self.match_history_lock.acquire()
-        await self.user_status_lock.acquire()
-        elo = self.get_elo(self.user_status, user.id)
-        df = pd.DataFrame(dict(timestamp=timestamp, playerID=user.id, elo=elo, team=0, status='delta', comment=comment),
-                          columns=self.match_history.columns.drop('new_elo'))
-        self.match_history_lock.release()
-        new_user_status = await self.update_players(ctx, df, self.user_status, lock=self.user_status_lock)
-        if new_user_status is not None:
-            self.user_status = new_user_status
-        else:
-            self.user_status_lock.release()
-            return
-
-        # Update name of player mentioned...
-        if user.nick is not None:
-            self.user_status.loc[user.id, 'name'] = user.nick
-        else:
-            self.user_status.loc[user.id, 'name'] = user.name
-
-        df = df.merge(self.user_status.reset_index()[['playerID', 'elo']].rename(columns=dict(elo='new_elo')), on='playerID')
-        self.user_status_lock.release()
-        await self.match_history_lock.acquire()
-        self.match_history = self.match_history.append(df, ignore_index=True)
-        gc.collect()
-        await ctx.message.channel.send(embed=await self.get_event_embed(ctx, timestamp))
-
-    @commands.command(name='match')
-    async def match(self, ctx, *, args: str):
-        '''Record a match into the system.
-
-        format: match TEAM1 TEAM2 [at [YYYY-]mm-dd HH-mm] [K=value] ["title and comments"]
-
-        where TEAM# is in the format @mention1 [@mention2 ...] {win|loss|draw}
-
-        example: match @mention1 @mention2 win @mention3 @mention4 loss at 2017-01-01 23:01 K=55 "foo"
-        This represents a 2v2 game, where mention1 and mention2 defeated
-        mention3 and mention4 at 23:01 UTC on January 1, 2017, with a
-        K factor of 55, and an occasion of foo.
-
-        There must be at least two teams. The team listing must end
-        with a status, for example win or loss.
-
-        This requires that the caller have permissions to manage matches.
-        '''
-
-        time_now = datetime.datetime.utcnow()
-        timestamp = time_now
-        match_data = []
-        
-        # Find comment, if any.
-        args = args.split('"')
-        if len(args) > 1:
-            if len(args) == 3:
-                # The user has a comment to make!
-                comment = args[1]
-            else:
-                # Mismatched quotes or multiple comments?
-                raise EloError('Comments must be enclosed in "double quotes!"')
-        else:
-            # No comment to make
-            comment = None
-        # Get first arg, ignore comments
-        args = args[0]
-
-        # Find custom K factor, if any.
-        args = args.split(' K=')
-        if len(args) > 1:
-            # The user input a custom K factor
-            try:
-                k_factor = float(args[1])
-            except ValueError:
-                raise EloError('K factor must be a number!')
-        else:
-            # The user wants the default K factor
-            k_factor = self.config['k_factor']
-        # Get the first argument, ignore K factor part
-        args = args[0]
-
-        split_time = args.split(sep=' at ')
-
-            
-
-        teams_str = split_time[0]
-        
-        team_name = 1
-        users_seen = []
-
-        teams = {}
-        team = []
-        done_with_team = False
-        for member_str in teams_str.split():
-            # If we have already iterated through, that means there are extraneous
-            # arguments! Notify the user that they will be ignored...
-            # First make sure this is actually a valid user...
-            user_id = member_str.strip('<@!>')
-            print("Checking for user id: {}".format(user_id))
-            try:
-                # The user id should be an integer as a string...
-                # We could optionally query discord, but that takes an annoying
-                # amount of time.
-                user_id = int(user_id)
-                print('User id found: %s' % user_id)
-
-                # Since this is a user id, start a new team if necessary:
-                if done_with_team:
-                    print('Done with team, adding another team...')
-                    team = []
-                    team_name += 1
-                    done_with_team = False
-                team.append(user_id)
-                if user_id not in users_seen:
-                    users_seen.append(user_id)
-                else:
-                    # We are getting a duplicate user.
-                    raise EloError('The same user was repeated multiple times!')
-            except ValueError:
-                # So if this isn't a user id, it must be the team status.
-
-                # If we just finished a team, this is an extraneous argument!
-                if done_with_team:
-                    raise EloError('Extraneous arguments detected while parsing teams!\n'
-                                       'Make sure you use valid @mentions for all players '
-                                       'and only specify `win` or `loss` after the list of '
-                                       'players!')
-
-                print('Status found: %s' % member_str)
-                team_status = member_str
-                done_with_team = True
-                teams[team_name] = (team, team_status)
-
-        # If we haven't completed all the teams (all teams must terminate with a team status)
-        # then we've gotta complain!
-        if not done_with_team:
-            raise EloError('Team not completed! Make sure to terminate the teams with a team status!\n'
-                         '(try putting win or loss after the list of team members)')
-            
-        await self.user_status_lock.acquire()
-        for team in teams.keys():
-            members, status = teams[team]
-            for member in members:
-                # Get player's elo
-                tm_elo = self.get_elo(self.user_status, member)
-
-                match_data.append(dict(timestamp=timestamp, playerID=member, elo=tm_elo, team=team, status=status))
-        self.user_status_lock.release()
-                
-        
-        # Create the df
-        await self.match_history_lock.acquire()
-        match_df = pd.DataFrame(match_data, columns=self.match_history.columns.drop('new_elo'))
-        match_df['eventID'] = self.match_history['timestamp'].nunique() + 1
-        match_df['value'] = k_factor
-        match_df['comment'] = comment
-        self.match_history_lock.release()
-        print(match_df)
-
-        # Make sure there are actually at least 2 teams.
-        if match_df['team'].nunique() < 2:
-            raise EloError('Need at least 2 teams for a match!')
-
-        if match_df['team'].nunique() > self.config['max_teams']:
-            raise EloError('Too many teams in this match!')
-
-        # update elo rating of player and wins/losses,
-        # by calling another function
-        new_user_status = await self.update_players(ctx, match_df, self.user_status, lock=self.user_status_lock)
-        if new_user_status is not None:
-            await self.user_status_lock.acquire()
-            self.user_status = new_user_status
-            self.user_status_lock.release()
-        else:
-            # If we couldn't update the scores, fail!
-            return
-
-        # Update names of people mentioned here...
-        await self.user_status_lock.acquire()
-        
-        match_players = match_df['playerID'].tolist()
-        for user_id in match_players:
-            try:
-                member = ctx.guild.get_member(user_id)
-            except ValueError:
-                pass
-            else:
-                if member.nick is not None:
-                    self.user_status.loc[member.id, 'name'] = member.nick
-                else:
-                    self.user_status.loc[member.id, 'name'] = member.name
-
-        match_df = match_df.merge(self.user_status.reset_index()[['playerID', 'elo']].rename(columns=dict(elo='new_elo')), on='playerID')
-        self.user_status_lock.release()
-
-        # Add the new df to the match history
-        await self.match_history_lock.acquire()
-        self.match_history = self.match_history.append(match_df, ignore_index=True)
-        self.match_history_lock.release()
-        print("current match history:")
-        print(self.match_history)
-        print("current player ratings:")
-        print(self.user_status)
-        # Sometimes there are circular references within dataframes? so we have to
-        # invoke the gc
-        gc.collect()
-        await ctx.message.channel.send(embed=await self.get_event_embed(ctx, timestamp))
 
     @commands.command()
     async def show(self, ctx, *, arg):
@@ -856,7 +634,10 @@ class Elo:
 
         # We can set the title to something like 1v1 Match
         print(match)
-        desc_text = 'v'.join(match.groupby('team')['playerID'].count().astype(str).tolist())
+        if match['team'].nunique() < 2:
+            desc_text = len(match)
+        else:
+            desc_text = 'v'.join(match.groupby('team')['playerID'].count().astype(str).tolist())
         desc_text += ' match'
         if match['comment'].iloc[0] is not None:
             title = match['comment'].iloc[0]
@@ -901,11 +682,13 @@ class Elo:
         except:
             avatar = None
 
-        title = '%s (%s, %d)' % (uinfo['name'], uinfo['rank'], int(uinfo['elo']))
+        title = '%s (%s, %d)' % (uinfo['name'], uinfo['rank'], self.get_masked_elo(self.user_status, user_id))
 
         # Construct description field
         description = "Wins: %d / Losses: %d / Total: %d\n" % (uinfo['wins'], uinfo['losses'], uinfo['matches_played'])
         description += "Player ID: %s\n" % user_id
+        description += "Raw Elo rating: %d\n" % round(self.get_elo(self.user_status, user_id))
+        description += "Bonuses: %d\n" % round(uinfo['mask'])
 
         # Get all matches played
         await self.match_history_lock.acquire()
