@@ -294,15 +294,15 @@ class Elo:
         # Handle command errors...
         bot.on_command_error = on_command_error
 
-    async def acquire_locks():
+    async def acquire_locks(self):
 
         await self.match_history_lock.acquire()
         await self.user_status_lock.acquire()
 
-    def release_locks():
+    def release_locks(self):
 
         self.match_history_lock.release()
-        self.match_history_lock.release()
+        self.user_status_lock.release()
 
     def get_elo(self, user_status, player):
         if player in user_status.index:
@@ -325,7 +325,6 @@ class Elo:
         match_history = pd.DataFrame(columns=self.match_history.columns)
 
         # For each match...
-        await self.match_history_lock.acquire()
         hist = self.match_history.sort_values('timestamp', ascending=False)
         for time, match in hist.groupby('timestamp', as_index=False):
             match = match.copy()
@@ -336,7 +335,7 @@ class Elo:
             print(match)
         
             # Update the user status for each player
-            user_status = await self.update_players(ctx, match, user_status)
+            user_status = await self.update_players(ctx, match, user_status, update_roles=False)
 
             # Grab the new elo
             match = match.drop('new_elo', axis=1, errors='ignore')
@@ -350,15 +349,16 @@ class Elo:
 
 
         # Finally, update the Elo object's match history and user status
-        await self.user_status_lock.acquire()
         self.match_history = match_history
         self.user_status = user_status
-        self.match_history_lock.release()
-        self.user_status_lock.release()
 
         # Update nicks...
         players = user_status.index.tolist()
         await self.update_nicks(ctx, players)
+
+        # Update roles
+        for uid in players:
+            await self.update_rank(ctx, user_status, uid, update_roles=True)
 
         print("Recalculated elo ratings.")
         print("New match history:")
@@ -366,7 +366,7 @@ class Elo:
         print("New ratings:")
         print(user_status)
 
-    async def process_single_player_events(self, match_df, user_status, lock=None):
+    async def process_single_player_events(self, ctx, match_df, user_status, lock=None, update_roles=True):
 
         event = match_df.iloc[0]
         if lock is not None:
@@ -379,7 +379,7 @@ class Elo:
         elif event['status'] == 'delta':
             user_status.loc[event['playerID'], 'mask'] += event['value']
 
-        await self.update_rank(user_status, event['playerID'])
+        await self.update_rank(ctx, user_status, event['playerID'], update_roles=update_roles)
         if lock is not None:
             lock.release()
 
@@ -388,11 +388,11 @@ class Elo:
 
 
 
-    async def update_players(self, ctx, match_df, user_status, lock=None):
+    async def update_players(self, ctx, match_df, user_status, lock=None, update_roles=True):
 
         # If this isn't a match, process it as a single player event (e.g. score adjustment)
         if len(match_df) == 1:
-            return await self.process_single_player_events(match_df, user_status, lock=lock)
+            return await self.process_single_player_events(ctx, match_df, user_status, lock=lock, update_roles=update_roles)
 
         # Otherwise, continue to process it as a normal match
         team_elo = match_df.groupby('team')[['elo']].sum()
@@ -422,16 +422,19 @@ class Elo:
         # If allowing only defined status values, we might have NaN values in there...
         # Fail if that happens..
         if team_elo['actual'].isnull().any():
+            self.release_locks()
             raise EloError('Unknown team status! Try one of '+
                                (', ').join(self.config['status_values'].keys()) + '!')
 
         # If score limit must be met exactly...
         if self.config['require_score_limit'] and team_elo['actual'].sum() != self.config['score_limit']:
             print(team_elo['actual'].sum())
+            self.release_locks()
             raise EloError('Not enough/too many teams are winning/losing!')
 
         # Limit total score
         if team_elo['actual'].sum() > self.config['score_limit']:
+            self.release_locks()
             raise EloError('Maximum score exceeded! Make sure the teams are not all winning!')
 
         team_elo['elo_delta'] = team_elo['value'] * (team_elo['actual'] - team_elo['expected'])
@@ -448,11 +451,11 @@ class Elo:
                 user_status.loc[player, 'wins'] += 1
             elif actual_score == 0:
                 user_status.loc[player, 'losses'] += 1
-            await self.update_rank(user_status, row['playerID'])
+            await self.update_rank(ctx, user_status, row['playerID'], update_roles=update_roles)
 
         return user_status
 
-    async def update_rank(self, user_status, uid):
+    async def update_rank(self, ctx, user_status, uid, update_roles=True):
         if self.config['ranks_use_raw_elo']:
             elo = self.get_elo
         else:
@@ -469,7 +472,7 @@ class Elo:
         user_status.loc[uid, 'color'] = max_rank['color']
 
         # Check if we have the permission to manipulate discord roles
-        if ctx.guild.me.permissions_in(ctx.message.channel).manage_roles:
+        if ctx.guild.me.permissions_in(ctx.message.channel).manage_roles and update_roles:
             # We are allowed to manipulate roles
             # Get all rank names
             all_ranks = [r['name'] for r in self.config['ranks']]
@@ -486,7 +489,10 @@ class Elo:
                     roles.append(role)
 
             # Edit user to change roles
-            await member.edit(roles=roles)
+            try:
+                await member.edit(roles=roles)
+            except discord.errors.Forbidden:
+                pass
 
 
     def get_status_value(self, status):
@@ -505,6 +511,9 @@ class Elo:
     async def add(self, ctx, *, event: EloEventConverter()):
         '''Add an event to the match history.'''
 
+        # Get locks
+        await self.acquire_locks()
+
         # We should have already gotten a dataframe as event,
         # since we wrote EloEventConverter, which should have
         # already parsed the event...
@@ -513,30 +522,22 @@ class Elo:
         event['timestamp'] = event['timestamp'].fillna(datetime.datetime.now())
         
         # Fill in current elo of players...
-        await self.user_status_lock.acquire()
         event['elo'] = event['playerID'].map(lambda x: self.get_elo(self.user_status, x))
         event['value'] = event['value'].fillna(self.config['k_factor'])
-        self.user_status_lock.release()
 
         # Now we're ready to update the players' Elo ratings...
-        new_user_status = await self.update_players(ctx, event, self.user_status,
-                                                    lock=self.user_status_lock)
+        new_user_status = await self.update_players(ctx, event, self.user_status)
 
         # If the update was successful, update the Elo ratings of all players
         if new_user_status is not None:
-            await self.user_status_lock.acquire()
             self.user_status = new_user_status
-            self.user_status_lock.release()
         else:
             return
 
         # Bring the new elo scores back into the match dataframe...
-        await self.user_status_lock.acquire()
         event = event.merge(self.user_status.reset_index()[['playerID', 'elo']]
                 .rename(columns=dict(elo='new_elo')), on='playerID')
-        self.user_status_lock.release()
 
-        await self.match_history_lock.acquire()
 
         # Assign an eventID
         if len(self.match_history > 0):
@@ -550,7 +551,6 @@ class Elo:
         
         # Add this event to the match history
         self.match_history = self.match_history.append(event, ignore_index=True)
-        self.match_history_lock.release()
         print("current event history:")
         print(self.match_history)
         print("current player ratings:")
@@ -567,11 +567,13 @@ class Elo:
             self.recalculate_elo(ctx)
         await ctx.message.channel.send(embed=await self.get_event_embed(ctx, timestamp))
 
+        # Release locks
+        self.release_locks()
+
     
     async def update_nicks(self, ctx, uids):
         
         # Update user nicks
-        await self.user_status_lock.acquire()
 
         for user_id in uids:
             try:
@@ -584,16 +586,16 @@ class Elo:
                 else:
                     self.user_status.loc[member.id, 'name'] = member.name
 
-        self.user_status_lock.release()
 
 
     @commands.command()
     @commands.check(has_admin_perms)
     async def edit(self, ctx, eventid: int, *, event: EloEventConverter()):
 
-        await self.match_history_lock.acquire()
+        await self.acquire_locks()
+
         if eventid not in self.match_history['eventID']:
-            self.match_history_lock.release()
+            self.release_locks()
             raise EloError("Can't edit a nonexisting event!")
         old_event = self.match_history.query('eventID == @eventid')
 
@@ -604,7 +606,6 @@ class Elo:
         new_history = self.match_history.query('eventID != @eventid').append(event)
 
         self.match_history = new_history
-        self.match_history_lock.release()
 
         await self.recalculate_elo(ctx)
 
@@ -615,16 +616,19 @@ class Elo:
     @commands.check(has_admin_perms)
     async def delete(self, ctx, eventid: int):
 
-        await self.match_history_lock.acquire()
+        await self.acquire_locks()
+
         if eventid not in self.match_history['eventID']:
-            self.match_history_lock.release()
+            self.release_locks()
             raise EloError("Can't delete a nonexisting event!")
         self.match_history = self.match_history.query('eventID != @eventid')
         
-        self.match_history_lock.release()
         await self.recalculate_elo(ctx)
 
         await ctx.message.channel.send('Deleted event!')
+
+        self.release_locks()
+
 
     @commands.command()
     @commands.check(has_player_perms)
@@ -638,12 +642,15 @@ class Elo:
         Display the second page of events on 2017-01-01: show 2017-01-01 2
         '''
 
+        await self.acquire_locks()
+
         args = arg.split()
         if len(args) > 1:
             try:
                 page = int(args[1])-1
                 print('page requested: %d' % page)
             except ValueError:
+                self.release_locks()
                 raise EloError("Page number must be an integer!")
         else:
             page = 0
@@ -656,23 +663,22 @@ class Elo:
             try:
                 timestamp = datetime.datetime.strptime(arg, '%Y-%m-%d')
             except ValueError:
+                self.release_locks()
                 raise EloError("Couldn't parse argument as event ID or date!")
             else:
-                await self.match_history_lock.acquire()
                 mask = (timestamp <= self.match_history['timestamp']) & \
                         (timestamp + datetime.timedelta(days=1) > self.match_history['timestamp'])
                 timestamps = self.match_history.drop_duplicates(subset='timestamp').loc[mask, 'timestamp'].dt.to_pydatetime()
                 del mask
-                self.match_history_lock.release()
         else:
-            await self.match_history_lock.acquire()
             if eventID not in self.match_history['eventID']:
+                self.release_locks()
                 raise EloError("No events found!")
             mask = self.match_history['eventID'] == eventID
             timestamps = self.match_history.drop_duplicates(subset='timestamp').loc[mask, 'timestamp'].dt.to_pydatetime()
-            self.match_history_lock.release()
 
         if len(timestamps) < 1:
+            self.release_locks()
             raise EloError("No events found!")
 
         print(timestamps)
@@ -689,6 +695,7 @@ class Elo:
         else:
             page_count = (len(event_cards) + page_size - 1) / page_size
             if not (0 <= page < page_count):
+                self.release_locks()
                 raise EloError("Page index out of range!")
             # Iterate through the player cards only in the page we want...
             for i, card in enumerate(event_cards[page*page_size:(page+1)*page_size]):
@@ -698,13 +705,14 @@ class Elo:
                     page_string = ''
                 await ctx.message.channel.send(page_string, embed=card)
 
+        self.release_locks()
+
 
     async def get_event_embed(self, ctx, timestamp):
 
+
         # First try to find the event
-        await self.match_history_lock.acquire()
         match = self.match_history.query('timestamp == @timestamp').copy()
-        self.match_history_lock.release()
         if len(match) == 0:
             # We couldn't find the event!
             return False
@@ -731,9 +739,7 @@ class Elo:
         print(row)
         title = status_map[row['status']]
 
-        await self.user_status_lock.acquire()
         author = self.user_status.loc[row['playerID'], 'name']
-        self.user_status_lock.release()
         description = author + '\n'
         description += "Value: {} ({} -> {})\n".format(row['value'], row['elo'], row['new_elo'])
         if row['comment'] is not None:
@@ -766,10 +772,8 @@ class Elo:
         for team, team_members in match.groupby('team'):
             field_name = 'Team %s (%s)' % (team, team_members['status'].iloc[0])
             field_value = ''
-            await self.user_status_lock.acquire()
             for i, t in team_members.iterrows():
                 field_value += '*%s* (%d -> %d)\n' % (self.user_status.loc[t['playerID'], 'name'], round(t['elo']), round(t['new_elo']))
-            self.user_status_lock.release()
             embed.add_field(name=field_name, value=field_value)
 
         # Show eventID
@@ -786,12 +790,9 @@ class Elo:
         user_id is of the player whose stats are to be shown.
         '''
 
-        await self.user_status_lock.acquire()
         if user_id in self.user_status.index:
             uinfo = self.user_status.loc[user_id]
-            self.user_status_lock.release()
         else:
-            self.user_status_lock.release()
             return None
         try:
             avatar = ctx.guild.get_member(user_id).avatar_url
@@ -807,10 +808,8 @@ class Elo:
         description += "Bonuses: %d\n" % round(uinfo['mask'])
 
         # Get all matches played
-        await self.match_history_lock.acquire()
         ids_played = self.match_history.query('playerID == %s' % user_id)['eventID'].tolist()
         ids_played = [str(i) for i in ids_played]
-        self.match_history_lock.release()
         description += "Events: %s\n" % (', '.join(ids_played))
         embed = discord.Embed(type='rich', description=description, color=int('0x' + uinfo['color'], base=16))
         if avatar:
@@ -824,8 +823,10 @@ class Elo:
     @commands.check(has_admin_perms)
     async def recalculate(self, ctx):
         '''Recalculate elo ratings from scratch.'''
+        await self.acquire_locks()
         await self.recalculate_elo(ctx)
         await ctx.message.channel.send('Recalculated elo ratings!')
+        self.release_locks()
 
     @commands.command()
     @commands.check(has_player_perms)
@@ -841,6 +842,8 @@ class Elo:
 
         You can also @mention user(s).
         '''
+
+        await self.acquire_locks()
 
         # For now, we'll only search the database of known users. 
         # But we can also check the server itself.
@@ -869,6 +872,7 @@ class Elo:
 
         # If we found no players, tell the caller that!
         if len(player_cards) == 0:
+            self.release_locks()
             raise EloError('Couldn\'t find any players!')
 
         page_size = self.config['max_player_cards']
@@ -880,6 +884,7 @@ class Elo:
         else:
             page_count = (len(player_cards) + page_size - 1) / page_size
             if not (0 <= page < page_count):
+                self.release_locks()
                 raise EloError("Page index out of range!")
             # Iterate through the player cards only in the page we want...
             for i, card in enumerate(player_cards[page*page_size:(page+1)*page_size]):
@@ -889,31 +894,36 @@ class Elo:
                     page_string = ''
                 await ctx.message.channel.send(page_string, embed=card)
 
+        self.release_locks()
+
 
     @commands.command()
     @commands.check(has_player_perms)
     async def top(self, ctx, *, n=10):
         '''Show the top n players.'''
 
+        await self.acquire_locks()
+
         # Make sure the input is an integer
         try:
             n = int(n)
         except ValueError:
+            self.release_locks()
             raise EloError('The number of top players to show must be an integer!')
 
         # Make sure the number is non-negative
         if n < 0:
+            self.release_locks()
             raise EloError('Cannot display a negative number of top players!')
 
         # Make sure the number doesn't exceed the configurable limit
         if n > self.config['max_top']:
+            self.release_locks()
             raise EloError('Maximum players to display in top rankings is %d!'\
                     % self.config['max_top'])
 
-        await self.user_status_lock.acquire()
         print(self.user_status)
         topn = self.user_status.sort_values('elo', ascending=False).head(n)
-        self.user_status_lock.release()
         title = 'Top %d Players' % n
         desc = ''
         print(topn)
@@ -924,5 +934,6 @@ class Elo:
         print(desc)
         embed = discord.Embed(title=title, type='rich', description=desc)
 
+        self.release_locks()
         return await ctx.message.channel.send(embed=embed)
 
