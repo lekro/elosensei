@@ -157,9 +157,6 @@ class EloEventConverter(commands.Converter):
         # Have our handy parser parse everything but the teams...
         args = self.match_parser.parse_args(shlex.split(event_spec))
 
-        if args.timestamp is None:
-            timestamp = datetime.datetime.utcnow()
-
         # Manually parse teams
         teams = []
         team = []
@@ -186,7 +183,7 @@ class EloEventConverter(commands.Converter):
         match_df = pd.DataFrame(teams, columns=['playerID', 'team', 'status'])
         match_df['value'] = args.k_factor if args.k_factor is not None else None
         match_df['comment'] = args.comment
-        match_df['timestamp'] = timestamp
+        match_df['timestamp'] = args.timestamp
 
         # Disallow duplicate players
         if match_df['playerID'].duplicated().any():
@@ -234,7 +231,7 @@ async def on_command_error(ctx, error):
             await ctx.message.channel.send(original)
         else:
             raise original
-    elif isinstance(original, EloError):
+    elif isinstance(error, EloError):
         await ctx.message.channel.send(error);
     else:
         raise error
@@ -279,6 +276,16 @@ class Elo:
         # Handle command errors...
         bot.on_command_error = on_command_error
 
+    async def acquire_locks():
+
+        await self.match_history_lock.acquire()
+        await self.user_status_lock.acquire()
+
+    def release_locks():
+
+        self.match_history_lock.release()
+        self.match_history_lock.release()
+
     def get_elo(self, user_status, player):
         if player in user_status.index:
             return user_status.loc[player, 'elo']
@@ -301,20 +308,28 @@ class Elo:
 
         # For each match...
         await self.match_history_lock.acquire()
-        hist = self.match_history.sort_values('timestamp', ascending=True)
+        hist = self.match_history.sort_values('timestamp', ascending=False)
         for time, match in hist.groupby('timestamp', as_index=False):
             match = match.copy()
             # Replace the elo rating of each player with what it should be, from the user_status
             match['elo'] = match['playerID'].apply(lambda p: self.get_elo(user_status, p))
+
+            print('before grabbing new elo:')
+            print(match)
         
             # Update the user status for each player
             user_status = await self.update_players(ctx, match, user_status)
 
             # Grab the new elo
+            match = match.drop('new_elo', axis=1, errors='ignore')
             match = match.merge(user_status.reset_index()[['playerID', 'elo']].rename(columns=dict(elo='new_elo')), on='playerID')
+
+            print('after grabbing new elo:')
+            print(match)
 
             # Add the match to the new match history
             match_history = match_history.append(match, ignore_index=True)
+
 
         # Finally, update the Elo object's match history and user status
         await self.user_status_lock.acquire()
@@ -322,6 +337,10 @@ class Elo:
         self.user_status = user_status
         self.match_history_lock.release()
         self.user_status_lock.release()
+
+        # Update nicks...
+        players = user_status.index.tolist()
+        await self.update_nicks(ctx, players)
 
         print("Recalculated elo ratings.")
         print("New match history:")
@@ -450,6 +469,9 @@ class Elo:
         # We should have already gotten a dataframe as event,
         # since we wrote EloEventConverter, which should have
         # already parsed the event...
+
+        # Fill in current time if timestamp was not specified.
+        event['timestamp'] = event['timestamp'].fillna(datetime.datetime.now())
         
         # Fill in current elo of players...
         await self.user_status_lock.acquire()
@@ -469,22 +491,8 @@ class Elo:
         else:
             return
 
-        # Update user nicks
-        await self.user_status_lock.acquire()
-
-        players = event['playerID'].tolist()
-        for user_id in players:
-            try:
-                member = ctx.guild.get_member(user_id)
-            except ValueError:
-                pass
-            else:
-                if member.nick is not None:
-                    self.user_status.loc[member.id, 'name'] = member.nick
-                else:
-                    self.user_status.loc[member.id, 'name'] = member.name
-
         # Bring the new elo scores back into the match dataframe...
+        await self.user_status_lock.acquire()
         event = event.merge(self.user_status.reset_index()[['playerID', 'elo']]
                 .rename(columns=dict(elo='new_elo')), on='playerID')
         self.user_status_lock.release()
@@ -492,7 +500,14 @@ class Elo:
         await self.match_history_lock.acquire()
 
         # Assign an eventID
-        event['eventID'] = self.match_history['timestamp'].nunique() + 1
+        if len(self.match_history > 0):
+            event['eventID'] = self.match_history['eventID'].max() + 1
+        else: 
+            event['eventID'] = self.match_history['timestamp'].nunique() + 1
+
+        # Update nicks
+        players = event['playerID'].tolist()
+        await self.update_nicks(ctx, players)
         
         # Add this event to the match history
         self.match_history = self.match_history.append(event, ignore_index=True)
@@ -513,6 +528,25 @@ class Elo:
             self.recalculate_elo(ctx)
         await ctx.message.channel.send(embed=await self.get_event_embed(ctx, timestamp))
 
+    
+    async def update_nicks(self, ctx, uids):
+        
+        # Update user nicks
+        await self.user_status_lock.acquire()
+
+        for user_id in uids:
+            try:
+                member = ctx.guild.get_member(user_id)
+            except ValueError:
+                pass
+            else:
+                if member.nick is not None:
+                    self.user_status.loc[member.id, 'name'] = member.nick
+                else:
+                    self.user_status.loc[member.id, 'name'] = member.name
+
+        self.user_status_lock.release()
+
 
     @commands.command()
     @commands.check(has_admin_perms)
@@ -526,6 +560,8 @@ class Elo:
 
         event[['value','comment','timestamp']] = event[['value','comment','timestamp']]\
             .fillna(old_event[['value','comment','timestamp']])
+
+        event['eventID'] = old_event['eventID']
         new_history = self.match_history.query('eventID != @eventid').append(event)
 
         self.match_history = new_history
@@ -533,6 +569,8 @@ class Elo:
 
         await self.recalculate_elo(ctx)
 
+        await ctx.message.channel.send('Edited event!', 
+                embed=await self.get_event_embed(ctx, event['timestamp'].iloc[0]))
     
     @commands.command()
     @commands.check(has_admin_perms)
@@ -543,10 +581,11 @@ class Elo:
             self.match_history_lock.release()
             raise EloError("Can't delete a nonexisting event!")
         self.match_history = self.match_history.query('eventID != @eventid')
-
+        
         self.match_history_lock.release()
         await self.recalculate_elo(ctx)
 
+        await ctx.message.channel.send('Deleted event!')
 
     @commands.command()
     @commands.check(has_player_perms)
@@ -588,6 +627,8 @@ class Elo:
                 self.match_history_lock.release()
         else:
             await self.match_history_lock.acquire()
+            if eventID not in self.match_history['eventID']:
+                raise EloError("No events found!")
             mask = self.match_history['eventID'] == eventID
             timestamps = self.match_history.drop_duplicates(subset='timestamp').loc[mask, 'timestamp'].dt.to_pydatetime()
             self.match_history_lock.release()

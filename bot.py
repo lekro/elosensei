@@ -51,7 +51,7 @@ async def uptime(ctx):
     await ctx.message.channel.send(datetime.datetime.now() - bot.startup_time)
 
 
-@bot.command
+@bot.command()
 async def about(ctx):
     '''Get information about the bot.'''
     
@@ -76,7 +76,7 @@ async def about(ctx):
     '''
 
     # Enclose in backticks and send
-    ctx.message.channel.send('```' + bot_info + '```')
+    await ctx.message.channel.send('```' + bot_info + '```')
 
 def load_cogs(bot, config):
     if config['elo']['enable']:
