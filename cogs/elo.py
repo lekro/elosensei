@@ -70,13 +70,13 @@ class EloEventConverter(commands.Converter):
             raise EloError(message)
 
     # Set up argument parsers
-    match_parser = EloArgumentParser(prog='match')
+    match_parser = EloArgumentParser(prog='')
     match_parser.add_argument('match', nargs='+')
     match_parser.add_argument('--k-factor', '-k', type=int)
     match_parser.add_argument('--comment', '-c')
     match_parser.add_argument('--timestamp', '-t', type=valid_datetime)
 
-    adjustment_parser = EloArgumentParser(prog='TYPE')
+    adjustment_parser = EloArgumentParser(prog='')
     adjustment_parser.add_argument('player')
     adjustment_parser.add_argument('value', type=int)
     adjustment_parser.add_argument('--comment', '-c')
@@ -204,6 +204,8 @@ async def on_command_error(ctx, error):
             await ctx.message.channel.send(original)
         else:
             raise original
+    elif isinstance(original, EloError):
+        await ctx.message.channel.send(error);
     else:
         raise error
 
@@ -246,6 +248,18 @@ class Elo:
 
         # Handle command errors...
         bot.on_command_error = on_command_error
+
+    async def has_player_perms(self, ctx):
+        # Return True if the caller has permission
+        # to run queries
+        # TODO implement this function
+        return True
+    
+    async def has_admin_perms(self, ctx):
+        # Return True of the caller has permission
+        # to add, mutate, delete...
+        # TODO implement this function
+        return True
 
     def get_elo(self, user_status, player):
         if player in user_status.index:
@@ -411,6 +425,7 @@ class Elo:
 
 
     @commands.command()
+    @commands.check(self.has_admin_perms)
     async def add(self, ctx, *, event: EloEventConverter()):
         '''Add an event to the match history.'''
 
@@ -482,6 +497,7 @@ class Elo:
 
 
     @commands.command()
+    @commands.check(self.has_admin_perms)
     async def edit(self, ctx, eventid: int, *, event: EloEventConverter()):
 
         await self.match_history_lock.acquire()
@@ -501,6 +517,7 @@ class Elo:
 
     
     @commands.command()
+    @commands.check(self.has_admin_perms)
     async def delete(self, ctx, eventid: int):
 
         await self.match_history_lock.acquire()
@@ -514,6 +531,7 @@ class Elo:
 
 
     @commands.command()
+    @commands.check(self.has_player_perms)
     async def show(self, ctx, *, arg):
         '''Display information for a match or event given a date or event ID.
 
@@ -705,12 +723,14 @@ class Elo:
 
 
     @commands.command()
+    @commands.check(self.has_admin_perms)
     async def recalculate(self, ctx):
         '''Recalculate elo ratings from scratch.'''
         await self.recalculate_elo(ctx)
         await ctx.message.channel.send('Recalculated elo ratings!')
 
     @commands.command()
+    @commands.check(self.has_player_perms)
     async def player(self, ctx, *, name=None):
         '''Show a player's Elo profile.
 
@@ -773,6 +793,7 @@ class Elo:
 
 
     @commands.command()
+    @commands.check(self.has_player_perms)
     async def top(self, ctx, *, n=10):
         '''Show the top n players.'''
 
@@ -807,11 +828,3 @@ class Elo:
 
         return await ctx.message.channel.send(embed=embed)
 
-    @commands.command()
-    async def top(self, ctx, *, n=10):
-        '''Show the top n players.'''
-
-        try:
-            await self.top_command(ctx, n)
-        except EloError as e:
-            await ctx.message.channel.send(e)
