@@ -663,7 +663,7 @@ class Elo:
                                      + ", ".join(backup_map.keys()))
             return
 
-        await acquire_locks()
+        await self.acquire_locks()
 
         df = backup_map[name]
         # The bot is only compatible with Python>=3.5, so it doesn't
@@ -677,7 +677,7 @@ class Elo:
         await ctx.message.channel.send('Backup of `{}`, made on {}'.format(name, datetime.datetime.now()),
                                        file=fi)
 
-        release_locks()
+        self.release_locks()
 
     @commands.command()
     @commands.check(has_player_perms)

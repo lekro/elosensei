@@ -42,6 +42,7 @@
 				"default": false
 			}
 		],
+		"ranks_use_raw_elo": false,
 		"max_top": 16,
 		"max_player_cards": 4,
 		"max_match_cards": 4,
