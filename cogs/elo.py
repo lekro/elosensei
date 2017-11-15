@@ -8,6 +8,8 @@ import gc
 import asyncio
 import argparse
 import shlex
+import pickle
+import io
 
 # Store a constant dict of string->string for descriptions of 
 # things like score adjustment events
@@ -629,6 +631,51 @@ class Elo:
 
         self.release_locks()
 
+
+    @commands.command()
+    @commands.check(has_admin_perms)
+    async def backup(self, ctx, name: str):
+        '''Request that the bot upload a Python pickle of the 
+        specified dataframe.
+
+        USAGE: backup NAME
+        where NAME is the name of the dataframe to back up.
+
+        Note that the output format is a Python pickle. If you 
+        wish to manipulate the output, you should open it up in
+        python using pandas:
+
+        import pandas as pd
+        df = pd.read_pickle('/path/to/backup.pickle')
+        # Do what you need to with the df
+        '''
+
+        backup_map = {'users': self.user_status,
+                      'user_status': self.user_status,
+                      'events': self.match_history,
+                      'matches': self.match_history,
+                      'match_history': self.match_history}
+
+        if name not in backup_map:
+            await ctx.message.channel.send("Unknown dataframe name! Try one of "
+                                     + ", ".join(backup_map.keys()))
+            return
+
+        await acquire_locks()
+
+        df = backup_map[name]
+        # The bot is only compatible with Python>=3.5, so it doesn't
+        # hurt to use a pickle protocol available in Python>=3.4.
+        # We are converting to bytes with pickle instead of using
+        # pandas.to_pickle so we can keep all operations in memory
+        # and not write to disk at all.
+        backup_bytes = pickle.dumps(df, protocol=-1)
+        backup_io = io.BytesIO(backup_bytes)
+        fi = discord.File(backup_io, filename='{}.pickle'.format(name))
+        await ctx.message.channel.send('Backup of `{}`, made on {}'.format(name, datetime.datetime.now()),
+                                       file=fi)
+
+        release_locks()
 
     @commands.command()
     @commands.check(has_player_perms)
