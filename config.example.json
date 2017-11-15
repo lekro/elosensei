@@ -44,7 +44,11 @@
 		],
 		"max_top": 16,
 		"max_player_cards": 4,
-		"max_match_cards": 4
+		"max_match_cards": 4,
+		"queries_need_admin_perms": false,
+		"player_perms_need_role": false,
+		"player_role_name": "Player",
+		"admin_role_name": "Elo Manager"
 	}
 }
 
