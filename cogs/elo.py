@@ -943,8 +943,19 @@ class Elo:
 
     @commands.command()
     @commands.check(has_player_perms)
-    async def top(self, ctx, *, n=10):
-        '''Show the top n players.'''
+    async def top(self, ctx, n=10, score_type='mask'):
+        '''Show the top n players, by masked Elo or raw Elo.
+        
+        USAGE: top [NTOP] [TYPE]
+        where NTOP is the number of top players to display
+        and TYPE is the type of score to sort by
+
+        Valid values for TYPE are mask and raw.
+        '''
+        valid_score_types = ['mask', 'raw']
+        if score_type not in valid_score_types:
+            raise_error('Invalid score type requested! Try one of '
+                        + ', '.join(valid_score_types))
 
         await self.acquire_locks()
 
@@ -963,14 +974,23 @@ class Elo:
             self.raise_error('Maximum players to display in top rankings is %d!'\
                     % self.config['max_top'])
 
-        print(self.user_status)
-        topn = self.user_status.sort_values('elo', ascending=False).head(n)
+        ustatus = self.user_status
+
+        # Figure out how the user wishes to sort this thing
+        if score_type == 'mask':
+            ustatus['sort'] = ustatus['elo'] + ustatus['mask']
+        elif score_type == 'raw':
+            ustatus['sort'] = ustatus['elo']
+        else:
+            raise_error('Internal error! Score type `{}` is undefined!'.format(score_type))
+
+        topn = self.user_status.sort_values('sort', ascending=False).head(n)
         title = 'Top %d Players' % n
         desc = ''
         print(topn)
         for i, (uid, uinfo) in enumerate(topn.iterrows()):
             print(i)
-            desc += '%d. %s (%s, %d)\n' % (i+1, uinfo['name'], uinfo['rank'], round(uinfo['elo']))
+            desc += '%d. %s (%s, %d)\n' % (i+1, uinfo['name'], uinfo['rank'], round(uinfo['sort']))
         print(title)
         print(desc)
         embed = discord.Embed(title=title, type='rich', description=desc)
