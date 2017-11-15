@@ -306,6 +306,11 @@ class Elo:
         self.match_history_lock.release()
         self.user_status_lock.release()
 
+    def raise_error(self, message='Internal error!'):
+
+        self.release_locks()
+        raise EloError(message)
+
     def get_elo(self, user_status, player):
         if player in user_status.index:
             return user_status.loc[player, 'elo']
@@ -424,20 +429,18 @@ class Elo:
         # If allowing only defined status values, we might have NaN values in there...
         # Fail if that happens..
         if team_elo['actual'].isnull().any():
-            self.release_locks()
-            raise EloError('Unknown team status! Try one of '+
+            self.raise_error('Unknown team status! Try one of '+
                                (', ').join(self.config['status_values'].keys()) + '!')
 
         # If score limit must be met exactly...
         if self.config['require_score_limit'] and team_elo['actual'].sum() != self.config['score_limit']:
             print(team_elo['actual'].sum())
-            self.release_locks()
-            raise EloError('Not enough/too many teams are winning/losing!')
+            self.raise_error('Not enough/too many teams are winning/losing!')
 
         # Limit total score
         if team_elo['actual'].sum() > self.config['score_limit']:
             self.release_locks()
-            raise EloError('Maximum score exceeded! Make sure the teams are not all winning!')
+            self.raise_error('Maximum score exceeded! Make sure the teams are not all winning!')
 
         team_elo['elo_delta'] = team_elo['value'] * (team_elo['actual'] - team_elo['expected'])
 
@@ -621,8 +624,7 @@ class Elo:
         await self.acquire_locks()
 
         if eventid not in self.match_history['eventID']:
-            self.release_locks()
-            raise EloError("Can't delete a nonexisting event!")
+            self.raise_error("Can't delete a nonexisting event!")
         self.match_history = self.match_history.query('eventID != @eventid')
         
         await self.recalculate_elo(ctx)
@@ -697,8 +699,7 @@ class Elo:
                 page = int(args[1])-1
                 print('page requested: %d' % page)
             except ValueError:
-                self.release_locks()
-                raise EloError("Page number must be an integer!")
+                self.raise_error("Page number must be an integer!")
         else:
             page = 0
         arg = args[0]
@@ -710,7 +711,6 @@ class Elo:
             try:
                 timestamp = datetime.datetime.strptime(arg, '%Y-%m-%d')
             except ValueError:
-                self.release_locks()
                 raise EloError("Couldn't parse argument as event ID or date!")
             else:
                 mask = (timestamp <= self.match_history['timestamp']) & \
@@ -720,13 +720,12 @@ class Elo:
         else:
             if eventID not in self.match_history['eventID']:
                 self.release_locks()
-                raise EloError("No events found!")
+                self.raise_error("No events found!")
             mask = self.match_history['eventID'] == eventID
             timestamps = self.match_history.drop_duplicates(subset='timestamp').loc[mask, 'timestamp'].dt.to_pydatetime()
 
         if len(timestamps) < 1:
-            self.release_locks()
-            raise EloError("No events found!")
+            self.raise_error("No events found!")
 
         print(timestamps)
 
@@ -919,8 +918,7 @@ class Elo:
 
         # If we found no players, tell the caller that!
         if len(player_cards) == 0:
-            self.release_locks()
-            raise EloError('Couldn\'t find any players!')
+            self.raise_error('Couldn\'t find any players!')
 
         page_size = self.config['max_player_cards']
         # If we find only one page of players, just output them.
@@ -931,8 +929,7 @@ class Elo:
         else:
             page_count = (len(player_cards) + page_size - 1) / page_size
             if not (0 <= page < page_count):
-                self.release_locks()
-                raise EloError("Page index out of range!")
+                self.raise_error("Page index out of range!")
             # Iterate through the player cards only in the page we want...
             for i, card in enumerate(player_cards[page*page_size:(page+1)*page_size]):
                 if i==0:
@@ -955,18 +952,15 @@ class Elo:
         try:
             n = int(n)
         except ValueError:
-            self.release_locks()
-            raise EloError('The number of top players to show must be an integer!')
+            self.raise_error('The number of top players to show must be an integer!')
 
         # Make sure the number is non-negative
         if n < 0:
-            self.release_locks()
-            raise EloError('Cannot display a negative number of top players!')
+            self.raise_error('Cannot display a negative number of top players!')
 
         # Make sure the number doesn't exceed the configurable limit
         if n > self.config['max_top']:
-            self.release_locks()
-            raise EloError('Maximum players to display in top rankings is %d!'\
+            self.raise_error('Maximum players to display in top rankings is %d!'\
                     % self.config['max_top'])
 
         print(self.user_status)
