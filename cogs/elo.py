@@ -340,6 +340,7 @@ class Elo:
 
         # For each match...
         hist = self.match_history.sort_values('timestamp', ascending=False)
+        
         for time, match in hist.groupby('timestamp', as_index=False):
             match = match.copy()
             # Replace the elo rating of each player with what it should be, from the user_status
@@ -365,8 +366,12 @@ class Elo:
         await self.update_nicks(ctx, players)
 
         # Update roles
+        # DEBUG
+        init_time = datetime.datetime.now()
+        # END DEBUG
         for uid in players:
             await self.update_rank(ctx, user_status, uid, update_roles=True)
+        print('Processing ranks took: {}'.format(datetime.datetime.now() - init_time))
 
 
     async def process_single_player_events(self, ctx, match_df, user_status, lock=None, update_roles=True):
@@ -505,8 +510,90 @@ class Elo:
     @commands.command()
     @commands.check(has_admin_perms)
     async def add(self, ctx, *, event: EloEventConverter()):
-        '''Add an event to the match history.'''
+        '''Add an event to the match history.
+        
+        USAGE: add EVENTTYPE EVENTSPEC
+        where EVENTTYPE is a valid event type
+        and EVENTSPEC is the specification for the event
+        
+        To add a match:
+            EVENTSPEC will be of the format
+            TEAM1 TEAM1-STATUS TEAM2 TEAM2-STATUS [-k kFactor] [-t YYYY-mm-dd/HH:MM] [-c "comment"]
 
+            Defining teams:
+
+                Teams are formatted as players separated by spaces. You can use mentions, player names,
+                or discord's userIDs. If you wish to use player names which have spaces in them, enclose
+                the entire player name in quotes.
+
+                Team statuses are defined in the configuration. Try win, loss, or draw.
+
+                Note that if a player has the same name as a team status, you cannot use their player name
+                to add them to a team.
+
+                For example:
+                    `*`add match player1 win player2 loss`*`
+                adds a match where player1 won against player2.
+
+            Custom K factor:
+
+                If you wish to change the match weighting, use a custom K factor.
+                After all the teams, specify the K factor as an integer after the -k flag.
+                For example:
+                    `*`add match player1 win player2 loss -k 35`*`
+                adds a match where player1 won against player2, with a K factor of 35.
+
+        To add an adjustment:
+            EVENTSPEC will be of the format
+            PLAYER VALUE [-t YYYY-mm-dd/HH:MM] [-c "comment"]
+
+            Just like in matches, PLAYER can be a mention, player name, or discord user ID.
+
+            Valid adjustment event types include `*`set`*`, `*`delta`*`, and `*`delta_inline`*`.
+
+            Set events:
+                "Set events" set the player's Elo rating to the value specified by VALUE.
+                This is useful to specify a player's initial score if all or part of the match
+                history has been lost. Be sure to specify the timestamp if other matches are to
+                be recorded in the past.
+
+                For example:
+                    `*`add set player1 1240`*`
+                sets player1's Elo rating to 1240.
+
+            Delta events:
+                "Delta events" add a mask on top of the player's Elo rating, boosting or punishing 
+                their score as it appears in the `*`top`*` or `*`player`*` commands. This is useful
+                if you wish to reward/punish players with some change in score, without breaking
+                the dynamics of Elo rating.
+
+            Inline delta events:
+                "Inline delta events" are delta events, except they change the player's actual
+                Elo rating instead of changing a mask. DO NOT use this type of event unless
+                you actually know what you're doing and are using this for some sort of special
+                event which actually represents players' skill but can't be recorded using
+                `*`match`*` somehow.
+
+        Common options:
+
+            These options can be set for all events.
+
+            Custom timestamp:
+
+                If you wish to record matches which occurred in the past, specify a custom timestamp.
+                After all the teams, specify the timestamp in the format YYYY-mm-dd/HH:MM after the 
+                -t flag. The time must be in 24-hour format and in the UTC timezone.
+                For example:
+                    `*`add match player1 win player2 loss -t 1999-12-31/23:59`*`
+                records a match where player1 won against player2 on Dec. 31, 1999, one minute before
+                midnight in UTC.
+
+            Comment:
+
+                A comment can be specified by entering text inside quotes after a -c. This appears
+                when showing matches and is useful to document the occasion or reason for an event.
+
+        '''
         # Get locks
         await self.acquire_locks()
 
@@ -516,7 +603,7 @@ class Elo:
 
         # Fill in current time if timestamp was not specified.
         event['timestamp'] = event['timestamp'].fillna(datetime.datetime.utcnow())
-        
+                
         # Fill in current elo of players...
         event['elo'] = event['playerID'].map(lambda x: self.get_elo(self.user_status, x))
         event['value'] = event['value'].fillna(self.config['k_factor'])
@@ -592,11 +679,17 @@ class Elo:
             raise_error("Can't edit a nonexisting event!")
         old_event = self.match_history.query('eventID == @eventid')
 
-        event[['value','comment','timestamp']] = event[['value','comment','timestamp']]\
-            .fillna(old_event[['value','comment','timestamp']])
+        print(old_event)
+        # Fill in NA values from old event.
+        event['value'] = event['value'].fillna(old_event['value'].iloc[0])
+        if old_event['comment'].iloc[0] is not None:
+            event['comment'] = event['comment'].fillna(old_event['comment'].iloc[0])
+        event['timestamp'] = event['timestamp'].fillna(old_event['timestamp'].iloc[0])
 
-        event['eventID'] = old_event['eventID']
-        new_history = self.match_history.query('eventID != @eventid').append(event)
+        event['eventID'] = old_event['eventID'].iloc[0]
+        new_history = self.match_history.query('eventID != @eventid').append(event,
+                ignore_index=True)
+        print(new_history)
 
         self.match_history = new_history
 
@@ -604,11 +697,14 @@ class Elo:
 
         await ctx.message.channel.send('Edited event!', 
                 embed=await self.get_event_embed(ctx, event['timestamp'].iloc[0]))
+
+        self.release_locks()
     
     @commands.command()
     @commands.check(has_admin_perms)
     async def delete(self, ctx, eventid: int):
 
+        init_time = datetime.datetime.now()
         await self.acquire_locks()
 
         if eventid not in self.match_history['eventID'].tolist():
@@ -616,10 +712,12 @@ class Elo:
         self.match_history = self.match_history.query('eventID != @eventid')
         
         await self.recalculate_elo(ctx)
+        print('time taken for delete: {}'.format(datetime.datetime.now() - init_time))
 
         await ctx.message.channel.send('Deleted event!')
 
         self.release_locks()
+        
 
 
     @commands.command()
@@ -752,7 +850,7 @@ class Elo:
         match = self.match_history.query('timestamp == @timestamp').copy()
         if len(match) == 0:
             # We couldn't find the event!
-            return False
+            self.raise_error("Couldn't find event with timestamp {}!".format(timestamp))
 
         # Now that we have the event, we pretty-print
         # If the length is only 1, then this is a singleplayer event.
