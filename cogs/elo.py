@@ -37,7 +37,6 @@ def valid_datetime(s):
     else:
         pass
 
-    print(s)
 
     timestamp = None
 
@@ -194,20 +193,16 @@ class EloEventConverter(commands.Converter):
         if match_df['playerID'].duplicated().any():
             raise EloError('Players must be unique!')
 
-        print(match_df)
         return match_df
 
     async def parse_adjustment(self, ctx, event_type, event_spec):
         # Parse single player events
         args = self.adjustment_parser.parse_args(shlex.split(event_spec))
 
-        if args.timestamp is None:
-            timestamp = datetime.datetime.utcnow()
-
         member = await self.parse_user(ctx, args.player)
 
         event_df = pd.DataFrame([[member.id, 0, event_type, args.value,
-                                 args.comment, timestamp]],
+                                 args.comment, args.timestamp]],
                                 columns=['playerID', 'team', 'status',
                                          'value', 'comment', 'timestamp'])
         return event_df
@@ -220,14 +215,21 @@ class EloEventConverter(commands.Converter):
 
         self.config = ctx.bot.elo_config
 
-        event_type, event_spec = argument.split(maxsplit=1)
+        try: 
+            event_type, event_spec = argument.split(maxsplit=1)
+        except ValueError:
+            raise EloError('Wrong event format! Events must be specified as `EVENTTYPE EVENTSPEC`')
 
-        if event_type not in self.event_parser_map.keys():
-            raise EloError('Unknown event type!')
+        if event_type not in self.event_parser_map:
+            raise EloError('Unknown event type `{}`!\n'.format(event_type)
+                           + 'Try one of `' + '`, `'.join(self.event_parser_map.keys())
+                           + '`!')
         return await self.event_parser_map[event_type](ctx, event_type, event_spec)
 
 async def on_command_error(ctx, error):
     '''Global error handler which gives EloError back to the user'''
+
+    # print('Caught error of type {}!'.format(type(error)))
 
     if hasattr(error, 'original'):
         original = error.original
@@ -249,6 +251,11 @@ async def on_command_error(ctx, error):
             original = error.__cause__
             if isinstance(original, EloError):
                 await ctx.message.channel.send(original)
+            elif isinstance(original, ValueError):
+                if 'invalid literal for int' in str(original):
+                    val = str(original)
+                    val = val[val.find("'")+1:val.rfind("'")]
+                    await ctx.message.channel.send('Was expecting integer but got `{}` instead!'.format(val))
             else:
                 raise original
         else:
@@ -338,18 +345,12 @@ class Elo:
             # Replace the elo rating of each player with what it should be, from the user_status
             match['elo'] = match['playerID'].apply(lambda p: self.get_elo(user_status, p))
 
-            print('before grabbing new elo:')
-            print(match)
-        
             # Update the user status for each player
             user_status = await self.update_players(ctx, match, user_status, update_roles=False)
 
             # Grab the new elo
             match = match.drop('new_elo', axis=1, errors='ignore')
             match = match.merge(user_status.reset_index()[['playerID', 'elo']].rename(columns=dict(elo='new_elo')), on='playerID')
-
-            print('after grabbing new elo:')
-            print(match)
 
             # Add the match to the new match history
             match_history = match_history.append(match, ignore_index=True)
@@ -367,11 +368,6 @@ class Elo:
         for uid in players:
             await self.update_rank(ctx, user_status, uid, update_roles=True)
 
-        print("Recalculated elo ratings.")
-        print("New match history:")
-        print(match_history)
-        print("New ratings:")
-        print(user_status)
 
     async def process_single_player_events(self, ctx, match_df, user_status, lock=None, update_roles=True):
 
@@ -404,10 +400,8 @@ class Elo:
         # Otherwise, continue to process it as a normal match
         team_elo = match_df.groupby('team')[['elo']].sum()
 
-        print(team_elo)
         # Bring in the first values of status and value for each team
         team_elo[['status', 'value']] = match_df.groupby('team').head(1).set_index('team')[['status', 'value']]
-        print(team_elo)
 
         if lock is not None:
             await lock.acquire()
@@ -429,12 +423,11 @@ class Elo:
         # If allowing only defined status values, we might have NaN values in there...
         # Fail if that happens..
         if team_elo['actual'].isnull().any():
-            self.raise_error('Unknown team status! Try one of '+
-                               (', ').join(self.config['status_values'].keys()) + '!')
+            self.raise_error('Unknown team status! Try one of `'+
+                               ('`, `').join(self.config['status_values'].keys()) + '`!')
 
         # If score limit must be met exactly...
         if self.config['require_score_limit'] and team_elo['actual'].sum() != self.config['score_limit']:
-            print(team_elo['actual'].sum())
             self.raise_error('Not enough/too many teams are winning/losing!')
 
         # Limit total score
@@ -444,8 +437,6 @@ class Elo:
 
         team_elo['elo_delta'] = team_elo['value'] * (team_elo['actual'] - team_elo['expected'])
 
-        print("processing one match:")
-        print(team_elo)
 
         for index, row in match_df.iterrows():
             player = row['playerID']
@@ -524,7 +515,7 @@ class Elo:
         # already parsed the event...
 
         # Fill in current time if timestamp was not specified.
-        event['timestamp'] = event['timestamp'].fillna(datetime.datetime.now())
+        event['timestamp'] = event['timestamp'].fillna(datetime.datetime.utcnow())
         
         # Fill in current elo of players...
         event['elo'] = event['playerID'].map(lambda x: self.get_elo(self.user_status, x))
@@ -556,10 +547,6 @@ class Elo:
         
         # Add this event to the match history
         self.match_history = self.match_history.append(event, ignore_index=True)
-        print("current event history:")
-        print(self.match_history)
-        print("current player ratings:")
-        print(self.user_status)
         # Sometimes there are circular references within dataframes? so we have to
         # invoke the gc
         gc.collect()
@@ -569,7 +556,9 @@ class Elo:
         # elo! This event belongs somewhere in the middle of the match history,
         # in that case.
         if timestamp < self.match_history['timestamp'].max():
-            self.recalculate_elo(ctx)
+            print('Timestamp {} was older than latest {}!'.format(timestamp,
+                self.match_history['timestamp'].max()))
+            await self.recalculate_elo(ctx)
         await ctx.message.channel.send(embed=await self.get_event_embed(ctx, timestamp))
 
         # Release locks
@@ -599,9 +588,8 @@ class Elo:
 
         await self.acquire_locks()
 
-        if eventid not in self.match_history['eventID']:
-            self.release_locks()
-            raise EloError("Can't edit a nonexisting event!")
+        if eventid not in self.match_history['eventID'].tolist():
+            raise_error("Can't edit a nonexisting event!")
         old_event = self.match_history.query('eventID == @eventid')
 
         event[['value','comment','timestamp']] = event[['value','comment','timestamp']]\
@@ -623,7 +611,7 @@ class Elo:
 
         await self.acquire_locks()
 
-        if eventid not in self.match_history['eventID']:
+        if eventid not in self.match_history['eventID'].tolist():
             self.raise_error("Can't delete a nonexisting event!")
         self.match_history = self.match_history.query('eventID != @eventid')
         
@@ -659,8 +647,9 @@ class Elo:
                       'match_history': self.match_history}
 
         if name not in backup_map:
-            await ctx.message.channel.send("Unknown dataframe name! Try one of "
-                                     + ", ".join(backup_map.keys()))
+            await ctx.message.channel.send("Unknown dataframe name! Try one of `"
+                                     + "`, `".join(backup_map.keys())
+                                     + "`!")
             return
 
         await self.acquire_locks()
@@ -674,7 +663,7 @@ class Elo:
         backup_bytes = pickle.dumps(df, protocol=-1)
         backup_io = io.BytesIO(backup_bytes)
         fi = discord.File(backup_io, filename='{}.pickle'.format(name))
-        await ctx.message.channel.send('Backup of `{}`, made on {}'.format(name, datetime.datetime.now()),
+        await ctx.message.channel.send('Backup of `{}`, made on {}'.format(name, datetime.datetime.utcnow()),
                                        file=fi)
 
         self.release_locks()
@@ -692,6 +681,9 @@ class Elo:
         '''
 
         await self.acquire_locks()
+
+        if len(self.match_history) < 1:
+            self.raise_error("No events have been added!")
 
         args = arg.split()
         if len(args) > 1:
@@ -718,9 +710,8 @@ class Elo:
                 timestamps = self.match_history.drop_duplicates(subset='timestamp').loc[mask, 'timestamp'].dt.to_pydatetime()
                 del mask
         else:
-            if eventID not in self.match_history['eventID']:
-                self.release_locks()
-                self.raise_error("No events found!")
+            if eventID not in self.match_history['eventID'].tolist():
+                self.raise_error("Couldn't find an event with ID #{}!".format(eventID))
             mask = self.match_history['eventID'] == eventID
             timestamps = self.match_history.drop_duplicates(subset='timestamp').loc[mask, 'timestamp'].dt.to_pydatetime()
 
@@ -787,7 +778,7 @@ class Elo:
 
         author = self.user_status.loc[row['playerID'], 'name']
         description = author + '\n'
-        description += "Value: {} ({} -> {})\n".format(row['value'], row['elo'], row['new_elo'])
+        description += "Value: {} ({} -> {})\n".format(row['value'], round(row['elo']), round(row['new_elo']))
         if row['comment'] is not None:
             description += row['comment']
         embed = discord.Embed(title=title, author=author, description=description, type='rich',
@@ -801,7 +792,6 @@ class Elo:
     async def get_match_embed(self, match):
 
         # We can set the title to something like 1v1 Match
-        print(match)
         if match['team'].nunique() < 2:
             desc_text = len(match)
         else:
@@ -954,7 +944,7 @@ class Elo:
         '''
         valid_score_types = ['mask', 'raw']
         if score_type not in valid_score_types:
-            raise_error('Invalid score type requested! Try one of '
+            raise EloError('Invalid score type requested! Try one of '
                         + ', '.join(valid_score_types))
 
         await self.acquire_locks()
@@ -987,11 +977,8 @@ class Elo:
         topn = self.user_status.sort_values('sort', ascending=False).head(n)
         title = 'Top %d Players' % n
         desc = ''
-        print(topn)
         for i, (uid, uinfo) in enumerate(topn.iterrows()):
-            print(i)
             desc += '%d. %s (%s, %d)\n' % (i+1, uinfo['name'], uinfo['rank'], round(uinfo['sort']))
-        print(title)
         print(desc)
         embed = discord.Embed(title=title, type='rich', description=desc)
 
