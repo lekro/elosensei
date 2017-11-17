@@ -511,88 +511,11 @@ class Elo:
     @commands.check(has_admin_perms)
     async def add(self, ctx, *, event: EloEventConverter()):
         '''Add an event to the match history.
-        
-        USAGE: add EVENTTYPE EVENTSPEC
-        where EVENTTYPE is a valid event type
-        and EVENTSPEC is the specification for the event
-        
-        To add a match:
-            EVENTSPEC will be of the format
-            TEAM1 TEAM1-STATUS TEAM2 TEAM2-STATUS [-k kFactor] [-t YYYY-mm-dd/HH:MM] [-c "comment"]
 
-            Defining teams:
+        USAGE: add EVENT
 
-                Teams are formatted as players separated by spaces. You can use mentions, player names,
-                or discord's userIDs. If you wish to use player names which have spaces in them, enclose
-                the entire player name in quotes.
-
-                Team statuses are defined in the configuration. Try win, loss, or draw.
-
-                Note that if a player has the same name as a team status, you cannot use their player name
-                to add them to a team.
-
-                For example:
-                    `*`add match player1 win player2 loss`*`
-                adds a match where player1 won against player2.
-
-            Custom K factor:
-
-                If you wish to change the match weighting, use a custom K factor.
-                After all the teams, specify the K factor as an integer after the -k flag.
-                For example:
-                    `*`add match player1 win player2 loss -k 35`*`
-                adds a match where player1 won against player2, with a K factor of 35.
-
-        To add an adjustment:
-            EVENTSPEC will be of the format
-            PLAYER VALUE [-t YYYY-mm-dd/HH:MM] [-c "comment"]
-
-            Just like in matches, PLAYER can be a mention, player name, or discord user ID.
-
-            Valid adjustment event types include `*`set`*`, `*`delta`*`, and `*`delta_inline`*`.
-
-            Set events:
-                "Set events" set the player's Elo rating to the value specified by VALUE.
-                This is useful to specify a player's initial score if all or part of the match
-                history has been lost. Be sure to specify the timestamp if other matches are to
-                be recorded in the past.
-
-                For example:
-                    `*`add set player1 1240`*`
-                sets player1's Elo rating to 1240.
-
-            Delta events:
-                "Delta events" add a mask on top of the player's Elo rating, boosting or punishing 
-                their score as it appears in the `*`top`*` or `*`player`*` commands. This is useful
-                if you wish to reward/punish players with some change in score, without breaking
-                the dynamics of Elo rating.
-
-            Inline delta events:
-                "Inline delta events" are delta events, except they change the player's actual
-                Elo rating instead of changing a mask. DO NOT use this type of event unless
-                you actually know what you're doing and are using this for some sort of special
-                event which actually represents players' skill but can't be recorded using
-                `*`match`*` somehow.
-
-        Common options:
-
-            These options can be set for all events.
-
-            Custom timestamp:
-
-                If you wish to record matches which occurred in the past, specify a custom timestamp.
-                After all the teams, specify the timestamp in the format YYYY-mm-dd/HH:MM after the 
-                -t flag. The time must be in 24-hour format and in the UTC timezone.
-                For example:
-                    `*`add match player1 win player2 loss -t 1999-12-31/23:59`*`
-                records a match where player1 won against player2 on Dec. 31, 1999, one minute before
-                midnight in UTC.
-
-            Comment:
-
-                A comment can be specified by entering text inside quotes after a -c. This appears
-                when showing matches and is useful to document the occasion or reason for an event.
-
+        For specific help, see the documentation at 
+        https://github.com/lekro/elosensei/wiki/Manipulating-events
         '''
         # Get locks
         await self.acquire_locks()
@@ -672,6 +595,13 @@ class Elo:
     @commands.command()
     @commands.check(has_admin_perms)
     async def edit(self, ctx, eventid: int, *, event: EloEventConverter()):
+        '''Edit an event.
+
+        USAGE: edit EVENTID EVENT
+
+        For specific help, read the documentation at
+        https://github.com/lekro/elosensei/wiki/Manipulating-events
+        '''
 
         await self.acquire_locks()
 
@@ -703,6 +633,12 @@ class Elo:
     @commands.command()
     @commands.check(has_admin_perms)
     async def delete(self, ctx, eventid: int):
+        '''Delete an event.
+
+        USAGE: delete EVENTID
+
+        Deletes the event with ID EVENTID.
+        '''
 
         init_time = datetime.datetime.now()
         await self.acquire_locks()
