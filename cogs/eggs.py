@@ -12,6 +12,9 @@ class Eggs:
 
     @commands.command()
     async def egg(self, ctx, name=None):
+        '''Show the egg with name <name>.
+
+        If <name> is not specified, then the default egg will be displayed.'''
 
         if name is None:
             name = self.config['default_egg']
