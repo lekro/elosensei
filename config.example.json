@@ -52,7 +52,8 @@
 		"player_role_name": "Player",
 		"admin_role_name": "Elo Manager",
 		"periodic_save": true,
-		"periodic_save_interval": 20
+		"periodic_save_interval": 20,
+		"save_on_shutdown": true
 	},
 	"eggs": {
 		"enable": true,

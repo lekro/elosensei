@@ -314,7 +314,10 @@ class Elo:
         if self.config['periodic_save']:
             # loop = asyncio.get_event_loop()
             # self.periodic_save_task = loop.create_task(self.periodic_save())
+            self.logger.info('Periodic save enabled, with period {} seconds.'.format(self.config['periodic_save_interval']))
             self.periodic_save_task = asyncio.ensure_future(self.periodic_save())
+        else:
+            self.logger.info('Periodic save disabled.')
 
     async def periodic_save(self):
         '''Periodically save the dataframes,
@@ -329,8 +332,9 @@ class Elo:
 
     async def do_shutdown_tasks(self):
 
-        self.logger.info('Saving event and user data before shutdown...')
-        await self.save_dataframes()
+        if self.config['save_on_shutdown']:
+            self.logger.info('Saving event and user data before shutdown...')
+            await self.save_dataframes()
 
     async def save_dataframes(self, use_locks=True):
         '''Save all dataframes to disk.
