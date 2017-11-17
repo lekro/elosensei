@@ -1,15 +1,16 @@
 {
 	"general": {
 		"description": "Manage Elo ratings and matches",
-		"prefix": "elo!",
+		"prefix": "elo",
 		"space_after_prefix": true, 
 		"playing": "MissileWars",
-		"token": "your-discord-bot-token-here"
+		"token": "your bot token here"
 	},
 	"elo": {
 		"enable": true,
-		"match_history_path": "matches.json",
-		"user_status_path": "players.json",
+		"log_level": "INFO",
+		"match_history_path": "matches.pkl",
+		"user_status_path": "players.pkl",
 		"default_elo": 1200,
 		"default_status_value": 0.0,
 		"status_values": {
@@ -49,7 +50,17 @@
 		"queries_need_admin_perms": false,
 		"player_perms_need_role": false,
 		"player_role_name": "Player",
-		"admin_role_name": "Elo Manager"
+		"admin_role_name": "Elo Manager",
+		"periodic_save": true,
+		"periodic_save_interval": 20,
+		"save_on_shutdown": true
+	},
+	"eggs": {
+		"enable": true,
+		"default_egg": "plot",
+		"eggs": {
+			"plot": "eggs/plot.png"
+		}
 	}
 }
 

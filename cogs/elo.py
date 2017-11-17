@@ -10,6 +10,8 @@ import argparse
 import shlex
 import pickle
 import io
+import logging
+from contextlib import suppress
 
 # Store a constant dict of string->string for descriptions of 
 # things like score adjustment events
@@ -271,6 +273,11 @@ class Elo:
     def __init__(self, bot, config):
         self.bot = bot
         self.config = config['elo']
+        self.logger = logging.getLogger('elo')
+        self.logger.setLevel(self.config['log_level'])
+        sh = logging.StreamHandler()
+        sh.setFormatter(logging.Formatter('(%(name)s) %(asctime)s [%(levelname)s] %(message)s'))
+        self.logger.addHandler(sh)
 
         # We also need to load the dataframes for both the match history
         # and current users status, given paths in the config
@@ -302,6 +309,45 @@ class Elo:
 
         # Handle command errors...
         bot.on_command_error = on_command_error
+
+        # Begin periodic task to save df's
+        if self.config['periodic_save']:
+            # loop = asyncio.get_event_loop()
+            # self.periodic_save_task = loop.create_task(self.periodic_save())
+            self.logger.info('Periodic save enabled, with period {} seconds.'.format(self.config['periodic_save_interval']))
+            self.periodic_save_task = asyncio.ensure_future(self.periodic_save())
+        else:
+            self.logger.info('Periodic save disabled.')
+
+    async def periodic_save(self):
+        '''Periodically save the dataframes,
+        using asyncio.sleep.
+        '''
+
+        while True:
+            await asyncio.sleep(self.config['periodic_save_interval'])
+            with suppress(asyncio.CancelledError):
+                self.logger.info('Autosaving event and user data.')
+                await self.save_dataframes()
+
+    async def do_shutdown_tasks(self):
+
+        if self.config['save_on_shutdown']:
+            self.logger.info('Saving event and user data before shutdown...')
+            await self.save_dataframes()
+
+    async def save_dataframes(self, use_locks=True):
+        '''Save all dataframes to disk.
+        Note that this coroutine function acquires and releases locks itself
+        by default!'''
+
+        if use_locks:
+            await self.acquire_locks()
+        self.user_status.to_pickle(self.config['user_status_path'])
+        self.match_history.to_pickle(self.config['match_history_path'])
+        if use_locks:
+            self.release_locks()
+
 
     async def acquire_locks(self):
 
@@ -505,6 +551,15 @@ class Elo:
                 # and we can catch it later
                 return None
                 return self.config['default_status_value']
+
+    @commands.command()
+    @commands.check(has_admin_perms)
+    async def save(self, ctx):
+        '''Force the bot to save the dataframes.'''
+
+        self.logger.info('Manual save of events and users started by {} ({}).'
+                .format(ctx.message.author.name, ctx.message.author.id))
+        await self.save_dataframes()
 
 
     @commands.command()

@@ -4,9 +4,11 @@ import asyncio
 import json
 import datetime
 import logging
+from contextlib import suppress
 
 # Import 'cogs'
 import cogs.elo
+import cogs.eggs
 
 # Make sure discord stuff is put into another log
 # This code is taken (almost) directly from the discord.py docs
@@ -81,9 +83,36 @@ async def about(ctx):
 def load_cogs(bot, config):
     if config['elo']['enable']:
         bot.add_cog(cogs.elo.Elo(bot, config))
-
+    if config['eggs']['enable']:
+        bot.add_cog(cogs.eggs.Eggs(bot, config))
 
 
 load_cogs(bot, config)
-bot.run(config['general']['token'])
+
+# Don't use discord.py's event loop abstraction since
+# we need to cancel periodic save tasks...
+
+loop = asyncio.get_event_loop()
+try:
+    loop.run_until_complete(bot.start(config['general']['token']))
+except KeyboardInterrupt:
+
+    # Now we can execute shutdown tasks for all of our cogs...
+    for cog in bot.cogs:
+        cog = bot.get_cog(cog)
+        if hasattr(cog, 'do_shutdown_tasks'):
+            loop.run_until_complete(cog.do_shutdown_tasks())
+
+    # Logout
+    loop.run_until_complete(bot.logout())
+
+    # Here we can cancel the periodic save task...
+    pending_tasks = asyncio.Task.all_tasks()
+    for task in pending_tasks:
+        task.cancel()
+        # We now flagged the task for cancellation but we have to allow it to run.
+        with suppress(asyncio.CancelledError):
+            loop.run_until_complete(task)
+finally:
+    loop.close()
 
