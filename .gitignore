@@ -1,1 +1,5 @@
 config.json
+discord.py/
+*.pkl
+*.pickle
+*.log
