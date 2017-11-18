@@ -368,7 +368,10 @@ class Elo:
         if player in user_status.index:
             return user_status.loc[player, 'elo']
         else:
-            user_status.loc[player] = dict(name=None, elo=self.config['default_elo'], wins=0, losses=0, matches_played=0, rank=None, color=None, mask=0)
+            # print(user_status)
+            user_status.loc[player] = dict(name=None, elo=self.config['default_elo'],
+                    wins=0, losses=0, matches_played=0, rank=None, color=None, mask=0,
+                    sort=self.config['default_elo'])
             return self.config['default_elo']
 
 
