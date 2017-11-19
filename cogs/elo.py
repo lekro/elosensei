@@ -307,6 +307,9 @@ class Elo:
 
         bot.elo_config = self.config
 
+        # Create parser for users
+        self.parser = EloEventConverter()
+
         # Handle command errors...
         bot.on_command_error = on_command_error
 
@@ -335,6 +338,7 @@ class Elo:
         if self.config['save_on_shutdown']:
             self.logger.info('Saving event and user data before shutdown...')
             await self.save_dataframes()
+            self.logger.info('Successfully saved.')
 
     async def save_dataframes(self, use_locks=True):
         '''Save all dataframes to disk.
@@ -961,40 +965,62 @@ class Elo:
     async def player(self, ctx, *, name=None):
         '''Show a player's Elo profile.
 
-        Players can be searched by the beginning of their name, or by mentioning
-        them. If no search query is present, the caller's (your) player card
+        Players can be searched by the beginning of their name, by mentioning
+        them, or by entering their name and discrim, like player1#1234.
+        If no search query is present, the caller's (your) player card
         will be shown, if any.
 
         For example, `elo! player lekro` will display the profile of all
         players whose names start with 'lekro'. 
-
-        You can also @mention user(s).
         '''
 
         await self.acquire_locks()
 
-        # For now, we'll only search the database of known users. 
-        # But we can also check the server itself.
-        # TODO check the server and get ids of users with this name as well
+        # We may encounter duplicates when using the various methods of searching
+        # for players, so we will make a set here.
+        uids = set()
         player_cards = []
         if name is not None:
+
             # Get page number to display. This will be the last part of the name,
             # if any.
             # But we should first check if there is any whitespace...
             # if there is no whitespace, then the name is the entire thing
             # no matter what, even if it's a number!
-
             spl = name.split()
             if len(spl) <= 1:
                 page = 0
+            else:
+                try:
+                    page = int(spl[-1])
+                except ValueError:
+                    page = 0
+
+            # Check mentions in message
             if len(ctx.message.mentions) > 0:
                 for mention in ctx.message.mentions:
-                    card = await self.get_player_card(ctx, mention.id)
-                    if card is not None:
-                        player_cards.append(card)
+                    uids.add(mention.id)
+
+            # Check in same way we do for matches
+            member = await self.parser.parse_user(ctx, name)
+            if member is not None:
+                uids.add(member.id)
+
+            # Check by iterating through names in the server...
+            for member in ctx.guild.members:
+                # Display name (nick or name)
+                if member.display_name.lower().startswith(name.lower()):
+                    uids.add(member.id)
+                # Name (Discord username)
+                if member.name.lower().startswith(name.lower()):
+                    uids.add(member.id)
+
         else:
             # Process self
-            card = await self.get_player_card(ctx, ctx.message.author.id)
+            uids.add(ctx.message.author.id)
+
+        for uid in uids:
+            card = await self.get_player_card(ctx, uid)
             if card is not None:
                 player_cards.append(card)
 
