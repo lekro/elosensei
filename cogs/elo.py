@@ -274,10 +274,6 @@ class Elo:
         self.bot = bot
         self.config = config['elo']
         self.logger = logging.getLogger('elo')
-        self.logger.setLevel(self.config['log_level'])
-        sh = logging.StreamHandler()
-        sh.setFormatter(logging.Formatter('(%(name)s) %(asctime)s [%(levelname)s] %(message)s'))
-        self.logger.addHandler(sh)
 
         # We also need to load the dataframes for both the match history
         # and current users status, given paths in the config

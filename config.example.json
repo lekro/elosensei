@@ -4,13 +4,13 @@
 		"prefix": "elo",
 		"space_after_prefix": true, 
 		"playing": "MissileWars",
+		"log_level": "INFO",
 		"token": "your bot token here"
 	},
 	"elo": {
 		"enable": true,
-		"log_level": "INFO",
-		"match_history_path": "matches.pkl",
-		"user_status_path": "players.pkl",
+		"match_history_path": "matches.pickle",
+		"user_status_path": "players.pickle",
 		"default_elo": 1200,
 		"default_status_value": 0.0,
 		"status_values": {
@@ -26,20 +26,38 @@
 		"ranks": [
 			{
 				"name": "Bronze",
-				"color": "AAAAAA",
+				"color": "cd7f32",
 				"cutoff": 0,
 				"default": true
 			},
 			{
 				"name": "Silver",
-				"color": "AAAAAA",
+				"color": "d3d3d3",
 				"cutoff": 1350,
 				"default": false
 			},
 			{
 				"name": "Gold",
-				"color": "AAAAAA",
+				"color": "ffd700",
 				"cutoff": 1500,
+				"default": false
+			},
+			{
+				"name": "Platinum",
+				"color": "e5e4e2",
+				"cutoff": 1650,
+				"default": false
+			},
+			{
+				"name": "Diamond",
+				"color": "b9f2ff",
+				"cutoff": 1800,
+				"default": false
+			},
+			{
+				"name": "Champion",
+				"color": "aabbcc",
+				"cutoff": 2000,
 				"default": false
 			}
 		],

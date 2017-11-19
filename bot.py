@@ -10,6 +10,10 @@ from contextlib import suppress
 import cogs.elo
 import cogs.eggs
 
+# Load the config file.
+with open('config.json', 'r') as jsonconf:
+    config = json.load(jsonconf)
+
 # Make sure discord stuff is put into another log
 # This code is taken (almost) directly from the discord.py docs
 logger = logging.getLogger('discord')
@@ -19,9 +23,12 @@ handler.setFormatter(logging.Formatter('%(asctime)s:%(levelname)s:'
                                        '%(name)s: %(message)s'))
 logger.addHandler(handler)
 
-# Load the config file.
-with open('config.json', 'r') as jsonconf:
-    config = json.load(jsonconf)
+# Have a logger for Elo...
+elo_logger = logging.getLogger('elo')
+elo_logger.setLevel(config['general']['log_level'])
+sh = logging.StreamHandler()
+sh.setFormatter(logging.Formatter('(%(name)s) %(asctime)s [%(levelname)s] %(message)s'))
+elo_logger.addHandler(sh)
 
 # Grab description and prefix from config
 description = config['general']['description']
@@ -39,12 +46,16 @@ bot.startup_time = datetime.datetime.now()
 
 @bot.event
 async def on_ready():
-    print('Logged in as')
-    print(bot.user.name)
-    print(bot.user.id)
-    print('Invite: https://discordapp.com/oauth2/authorize?client_id={}&scope=bot'.format(bot.user.id))
-    print('------')
+    elo_logger.info('Logged in as {} ({})'.format(bot.user.name, bot.user.id))
+    elo_logger.info('Invite: https://discordapp.com/oauth2/authorize?client_id={}&scope=bot'.format(bot.user.id))
     await bot.change_presence(game=discord.Game(name=config['general']['playing']))
+
+
+@bot.event
+async def on_command(ctx):
+    # Log commands sent...
+    elo_logger.info('{} ({}) ran command: {}'.format(ctx.message.author.name,
+        ctx.message.author.id, ctx.message.content))
 
 
 @bot.command()
