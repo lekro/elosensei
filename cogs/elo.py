@@ -647,10 +647,7 @@ class Elo:
             except ValueError:
                 pass
             else:
-                if member.nick is not None:
-                    self.user_status.loc[member.id, 'name'] = member.nick
-                else:
-                    self.user_status.loc[member.id, 'name'] = member.name
+                self.user_status.loc[member.id, 'name'] = member.display_name
 
 
 
