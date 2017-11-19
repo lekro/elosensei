@@ -15,8 +15,8 @@ from contextlib import suppress
 
 # Store a constant dict of string->string for descriptions of 
 # things like score adjustment events
-status_map = dict(delta='Score mask',
-                  delta_inline='Elo delta',
+status_map = dict(mask='Score mask',
+                  delta='Elo delta',
                   set='Elo set')
 
 class EloError(Exception):
@@ -121,8 +121,8 @@ class EloEventConverter(commands.Converter):
 
         # There should be a dict here mapping event_type to functions.
         self.event_parser_map = {'match': self.parse_match,
+                            'mask': self.parse_adjustment,
                             'delta': self.parse_adjustment,
-                            'delta_inline': self.parse_adjustment,
                             'set': self.parse_adjustment}
 
 
@@ -291,7 +291,7 @@ class Elo:
             self.user_status = pd.read_pickle(self.config['user_status_path'])
         except OSError:
             # Create new user status
-            self.user_status = pd.DataFrame(columns=['name', 'elo', 'wins', 'losses', 'matches_played', 'rank', 'color', 'mask'])
+            self.user_status = pd.DataFrame(columns=['name', 'elo', 'wins', 'losses', 'matches_played', 'rank', 'color', 'mask', 'sort'])
             self.user_status.index.name = 'playerID'
 
             # Set categorical dtype for rank
@@ -433,11 +433,11 @@ class Elo:
         if lock is not None:
             await lock.acquire()
         elo = self.get_elo(user_status, event['playerID'])
-        if event['status'] == 'delta_inline':
+        if event['status'] == 'delta':
             user_status.loc[event['playerID'], 'elo'] += event['value']
         elif event['status'] == 'set':
             user_status.loc[event['playerID'], 'elo'] = event['value']
-        elif event['status'] == 'delta':
+        elif event['status'] == 'mask':
             user_status.loc[event['playerID'], 'mask'] += event['value']
 
         await self.update_rank(ctx, user_status, event['playerID'], update_roles=update_roles)
