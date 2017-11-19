@@ -23,6 +23,7 @@ class Eggs:
             path = self.config['eggs'][name]
         else:
             await ctx.message.channel.send('Unknown egg with name `{}`!'.format(name))
+            return
 
         try:
             with open(path, 'rb') as f:
