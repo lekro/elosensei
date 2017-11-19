@@ -734,10 +734,7 @@ class Elo:
         '''
 
         backup_map = {'users': self.user_status,
-                      'user_status': self.user_status,
-                      'events': self.match_history,
-                      'matches': self.match_history,
-                      'match_history': self.match_history}
+                      'events': self.match_history}
 
         if name not in backup_map:
             await ctx.message.channel.send("Unknown dataframe name! Try one of `"
