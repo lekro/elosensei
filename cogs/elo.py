@@ -311,8 +311,6 @@ class Elo:
 
         # Begin periodic task to save df's
         if self.config['periodic_save']:
-            # loop = asyncio.get_event_loop()
-            # self.periodic_save_task = loop.create_task(self.periodic_save())
             self.logger.info('Periodic save enabled, with period {} seconds.'.format(self.config['periodic_save_interval']))
             self.periodic_save_task = asyncio.ensure_future(self.periodic_save())
         else:
@@ -563,6 +561,7 @@ class Elo:
         self.logger.info('Manual save of events and users started by {} ({}).'
                 .format(ctx.message.author.name, ctx.message.author.id))
         await self.save_dataframes()
+        await ctx.message.channel.send('Save successful!')
 
 
     @commands.command()
