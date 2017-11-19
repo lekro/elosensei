@@ -5,7 +5,6 @@ import json
 import datetime
 import logging
 from contextlib import suppress
-import textwrap
 
 # Import 'cogs'
 import cogs.elo
@@ -90,8 +89,6 @@ async def about(ctx):
     bot prefix as provided in the configuration files. Voice-related
     information is not collected at all.
     '''
-
-    # bot_info = textwrap.dedent(bot_info)
 
     # Enclose in backticks and send
     await ctx.message.channel.send(bot_info)
