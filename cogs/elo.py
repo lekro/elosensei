@@ -926,15 +926,20 @@ class Elo:
         user_id is of the player whose stats are to be shown.
         '''
 
+        # Try to retrieve the row pertaining to this user,
+        # or return None.
         if user_id in self.user_status.index:
             uinfo = self.user_status.loc[user_id]
         else:
             return None
+
+        # Try to get the user's avatar, if any.
         try:
             avatar = ctx.guild.get_member(user_id).avatar_url
         except:
             avatar = None
 
+        # Show name, rank, score in title
         title = '%s (%s, %d)' % (uinfo['name'], uinfo['rank'], 
                 round(self.get_masked_elo(self.user_status, user_id)))
 
@@ -998,6 +1003,9 @@ class Elo:
             else:
                 try:
                     page = int(spl[-1])
+                    # In case we did find a page number,
+                    # remove that from the name...
+                    name = " ".join(spl[:-1])
                 except ValueError:
                     page = 0
 
