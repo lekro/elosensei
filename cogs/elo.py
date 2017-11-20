@@ -323,6 +323,11 @@ class Elo:
 
         while True:
             await asyncio.sleep(self.config['periodic_save_interval'])
+
+            # Suppress CancelledError because we do not want to die
+            # in the middle of saving.
+            # But when it's done saving, if it's saving at all,
+            # the Task will exit.
             with suppress(asyncio.CancelledError):
                 self.logger.info('Autosaving event and user data.')
                 await self.save_dataframes()
@@ -348,21 +353,27 @@ class Elo:
 
 
     async def acquire_locks(self):
+        '''Acquire locks for dataframes'''
 
         await self.match_history_lock.acquire()
         await self.user_status_lock.acquire()
 
     def release_locks(self):
+        '''Release locks for dataframes'''
 
         self.match_history_lock.release()
         self.user_status_lock.release()
 
     def raise_error(self, message='Internal error!'):
+        '''Release locks and raise an EloError with the given message.'''
 
         self.release_locks()
         raise EloError(message)
 
     def get_elo(self, user_status, player):
+        '''Get the raw Elo rating from the given user status df.
+        If the playerID given is not in the df, add a corresponding row.'''
+
         if player in user_status.index:
             return user_status.loc[player, 'elo']
         else:
@@ -374,10 +385,14 @@ class Elo:
 
 
     def get_masked_elo(self, user_status, player):
+        '''Get the masked Elo rating from the given user status df.
+        Calls get_elo, then adds the mask.'''
+
         raw_elo = self.get_elo(user_status, player)
         return raw_elo + user_status.loc[player, 'mask']
 
     async def recalculate_elo(self, ctx):
+        '''Recalculate the Elo ratings and masks from scratch.'''
         
         # Reinstantiate user status
         user_status = pd.DataFrame(columns=self.user_status.columns)
@@ -441,9 +456,10 @@ class Elo:
         return user_status
 
 
-
-
     async def update_players(self, ctx, match_df, user_status, lock=None, update_roles=True):
+        '''Update the given user_status df using the event described in match_df.
+        If update_roles is True, update the users' Discord roles as well.
+        if lock is not None, acquire and release that lock to access user_status.'''
 
         # If this isn't a match, process it as a single player event (e.g. score adjustment)
         if len(match_df) == 1:
@@ -460,6 +476,8 @@ class Elo:
         user_status = user_status.copy()
         if lock is not None:
             lock.release()
+
+        # The following is the MEAT of the Elo rating calculation
 
         # Take mean of every team but this one
         for index, row in team_elo.iterrows():
@@ -487,10 +505,14 @@ class Elo:
             self.release_locks()
             self.raise_error('Maximum score exceeded! Make sure the teams are not all winning!')
 
+        # Main formula for elo delta - the value column has the K factor.
+        # Multiplication and subtraction here are POINTWISE.
         team_elo['elo_delta'] = team_elo['value'] * (team_elo['actual'] - team_elo['expected'])
 
 
         for index, row in match_df.iterrows():
+
+            # Update users in user_status given their elo_deltas
             player = row['playerID']
             user_status.loc[player, 'elo'] += team_elo.loc[row.team, 'elo_delta']
             actual_score = team_elo.loc[row.team, 'actual']
@@ -504,10 +526,15 @@ class Elo:
         return user_status
 
     async def update_rank(self, ctx, user_status, uid, update_roles=True):
+        '''Update the rank of player with user ID uid in user_status.'''
+
+        # Pick which way we want to get the elo...
         if self.config['ranks_use_raw_elo']:
             elo = self.get_elo
         else:
             elo = self.get_masked_elo
+
+        # Figure out which rank we are to give this user
         max_rank = None
         for rank in self.config['ranks']:
             if max_rank is None:
@@ -516,9 +543,12 @@ class Elo:
             else:
                 if elo(user_status, uid) > rank['cutoff'] and rank['cutoff'] > max_rank['cutoff']:
                     max_rank = rank
+
+        # Actually give the rank
         user_status.loc[uid, 'rank'] = max_rank['name']
         user_status.loc[uid, 'color'] = max_rank['color']
 
+        # Give discord role corresponding to rank, and remove old one, if any.
         # Check if we have the permission to manipulate discord roles
         if ctx.guild.me.permissions_in(ctx.message.channel).manage_roles and update_roles:
             # We are allowed to manipulate roles
@@ -544,6 +574,7 @@ class Elo:
 
 
     def get_status_value(self, status):
+        '''Parse status value (win, loss, draw) for matches'''
         try:
             return self.config['status_values'][status]
         except:
@@ -551,7 +582,6 @@ class Elo:
                 # This will become NaN in the dataframe
                 # and we can catch it later
                 return None
-                return self.config['default_status_value']
 
     @commands.command()
     @commands.check(has_admin_perms)
@@ -633,6 +663,7 @@ class Elo:
 
     
     async def update_nicks(self, ctx, uids):
+        '''Update nicks/names in the user_status df.'''
         
         # Update user nicks
 
@@ -673,7 +704,6 @@ class Elo:
         event['eventID'] = old_event['eventID'].iloc[0]
         new_history = self.match_history.query('eventID != @eventid').append(event,
                 ignore_index=True)
-        print(new_history)
 
         self.match_history = new_history
 
@@ -967,8 +997,8 @@ class Elo:
         '''Recalculate elo ratings from scratch.'''
         await self.acquire_locks()
         await self.recalculate_elo(ctx)
-        await ctx.message.channel.send('Recalculated elo ratings!')
         self.release_locks()
+        await ctx.message.channel.send('Recalculated elo ratings!')
 
     @commands.command()
     @commands.check(has_player_perms)
@@ -1042,6 +1072,8 @@ class Elo:
             if card is not None:
                 player_cards.append(card)
 
+        self.release_locks()
+
         # If we found no players, tell the caller that!
         if len(player_cards) == 0:
             self.raise_error('Couldn\'t find any players!')
@@ -1063,8 +1095,6 @@ class Elo:
                 else:
                     page_string = ''
                 await ctx.message.channel.send(page_string, embed=card)
-
-        self.release_locks()
 
 
     @commands.command()
