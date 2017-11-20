@@ -287,7 +287,7 @@ class Elo:
             self.user_status = pd.read_pickle(self.config['user_status_path'])
         except OSError:
             # Create new user status
-            self.user_status = pd.DataFrame(columns=['name', 'elo', 'wins', 'losses', 'matches_played', 'rank', 'color', 'mask', 'sort'])
+            self.user_status = pd.DataFrame(columns=['name', 'elo', 'wins', 'losses', 'matches_played', 'rank', 'color', 'mask'])
             self.user_status.index.name = 'playerID'
 
             # Set categorical dtype for rank
@@ -368,8 +368,8 @@ class Elo:
         else:
             # print(user_status)
             user_status.loc[player] = dict(name=None, elo=self.config['default_elo'],
-                    wins=0, losses=0, matches_played=0, rank=None, color=None, mask=0,
-                    sort=self.config['default_elo'])
+                    wins=0, losses=0, matches_played=0, rank=None, color=None, mask=0)
+                    
             return self.config['default_elo']
 
 
@@ -1009,6 +1009,9 @@ class Elo:
                 except ValueError:
                     page = 0
 
+            # Now, we can add a list of user IDs by checking for 
+            # them in various ways...
+
             # Check mentions in message
             if len(ctx.message.mentions) > 0:
                 for mention in ctx.message.mentions:
@@ -1029,9 +1032,11 @@ class Elo:
                     uids.add(member.id)
 
         else:
+            # The user hasn't passed a name argument
             # Process self
             uids.add(ctx.message.author.id)
 
+        # Get all relevant player cards
         for uid in uids:
             card = await self.get_player_card(ctx, uid)
             if card is not None:
@@ -1095,7 +1100,7 @@ class Elo:
             self.raise_error('Maximum players to display in top rankings is %d!'\
                     % self.config['max_top'])
 
-        ustatus = self.user_status
+        ustatus = self.user_status.copy()
 
         # Figure out how the user wishes to sort this thing
         if score_type == 'mask':
@@ -1105,6 +1110,7 @@ class Elo:
         else:
             raise_error('Internal error! Score type `{}` is undefined!'.format(score_type))
 
+        # Sort descending by that sort column
         topn = self.user_status.sort_values('sort', ascending=False).head(n)
         title = 'Top %d Players' % n
         desc = ''
