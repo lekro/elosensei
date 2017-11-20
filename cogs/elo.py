@@ -853,14 +853,20 @@ class Elo:
         # now we're just hardcoding the method to get embeds 
         # for certain events (namely singleplayer events)
 
+        # We might sometimes get a Series instead of a dataframe.
+        # No matter, we'll just take .iloc[0] if it's a dataframe,
+        # so we are guaranteed to have a series in the end.
+        # Single player events are always only one row.
         if isinstance(event, pd.Series):
             row = event
         else:
             row = event.iloc[0]
 
-        print(row)
+        # Lookup human-friendly version of event type
         title = status_map[row['status']]
 
+        # Add content. There aren't any fields here since that
+        # tends to create a bunch of clutter, especially on mobile.
         author = self.user_status.loc[row['playerID'], 'name']
         description = author + '\n'
         description += "Value: {} ({} -> {})\n".format(row['value'], round(row['elo']), round(row['new_elo']))
@@ -878,18 +884,27 @@ class Elo:
 
         # We can set the title to something like 1v1 Match
         if match['team'].nunique() < 2:
-            desc_text = len(match)
+            # If there was only one team, output something like 2-player match
+            # instead of the awkward "2 match"
+            desc_text = len(match) + "-player"
         else:
+            # If there were two or more teams, output something like 1v1 match
             desc_text = 'v'.join(match.groupby('team')['playerID'].count().astype(str).tolist())
         desc_text += ' match'
+
+        # Set the title to the comment, if any.
         if match['comment'].iloc[0] is not None:
             title = match['comment'].iloc[0]
         else:
             title = desc_text
 
+        # Add K factor to description
         desc_text += ' (K=%d)' % match['value'].iloc[0]
+
+        # Instantiate embed
         embed = discord.Embed(title=title, description=desc_text, type='rich', timestamp=match['timestamp'].iloc[0])
 
+        # Each team gets one field. This seems to work well on both mobile and desktop.
         for team, team_members in match.groupby('team'):
             field_name = 'Team %s (%s)' % (team, team_members['status'].iloc[0])
             field_value = ''
@@ -920,7 +935,8 @@ class Elo:
         except:
             avatar = None
 
-        title = '%s (%s, %d)' % (uinfo['name'], uinfo['rank'], self.get_masked_elo(self.user_status, user_id))
+        title = '%s (%s, %d)' % (uinfo['name'], uinfo['rank'], 
+                round(self.get_masked_elo(self.user_status, user_id)))
 
         # Construct description field
         description = "Wins: %d / Losses: %d / Total: %d\n" % (uinfo['wins'], uinfo['losses'], uinfo['matches_played'])
