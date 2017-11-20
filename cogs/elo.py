@@ -690,17 +690,18 @@ class Elo:
 
         await self.acquire_locks()
 
+        # Check if this event exists
         if eventid not in self.match_history['eventID'].tolist():
             raise_error("Can't edit a nonexisting event!")
         old_event = self.match_history.query('eventID == @eventid')
 
-        print(old_event)
         # Fill in NA values from old event.
         event['value'] = event['value'].fillna(old_event['value'].iloc[0])
         if old_event['comment'].iloc[0] is not None:
             event['comment'] = event['comment'].fillna(old_event['comment'].iloc[0])
         event['timestamp'] = event['timestamp'].fillna(old_event['timestamp'].iloc[0])
 
+        # Put old eventID
         event['eventID'] = old_event['eventID'].iloc[0]
         new_history = self.match_history.query('eventID != @eventid').append(event,
                 ignore_index=True)
@@ -709,10 +710,10 @@ class Elo:
 
         await self.recalculate_elo(ctx)
 
+        self.release_locks()
+
         await ctx.message.channel.send('Edited event!', 
                 embed=await self.get_event_embed(ctx, event['timestamp'].iloc[0]))
-
-        self.release_locks()
     
     @commands.command()
     @commands.check(has_admin_perms)
@@ -727,6 +728,7 @@ class Elo:
         init_time = datetime.datetime.now()
         await self.acquire_locks()
 
+        # Check if this event exists
         if eventid not in self.match_history['eventID'].tolist():
             self.raise_error("Can't delete a nonexisting event!")
         self.match_history = self.match_history.query('eventID != @eventid')
@@ -734,9 +736,9 @@ class Elo:
         await self.recalculate_elo(ctx)
         print('time taken for delete: {}'.format(datetime.datetime.now() - init_time))
 
-        await ctx.message.channel.send('Deleted event!')
-
         self.release_locks()
+
+        await ctx.message.channel.send('Deleted event!')
         
 
 
@@ -758,9 +760,11 @@ class Elo:
         # Do what you need to with the df
         '''
 
+        # Map args -> df
         backup_map = {'users': self.user_status,
                       'events': self.match_history}
 
+        # Fail if the user picked some arg we don't know about
         if name not in backup_map:
             await ctx.message.channel.send("Unknown dataframe name! Try one of `"
                                      + "`, `".join(backup_map.keys())
@@ -776,12 +780,19 @@ class Elo:
         # pandas.to_pickle so we can keep all operations in memory
         # and not write to disk at all.
         backup_bytes = pickle.dumps(df, protocol=-1)
+
+        # Release locks now. Now all we need to do is send the backup_bytes to discord.
+        self.release_locks()
+
+        # Get BytesIO object reading from backup_bytes
         backup_io = io.BytesIO(backup_bytes)
+
+        # Create a discord File reading from that BytesIO
         fi = discord.File(backup_io, filename='{}.pickle'.format(name))
+
+        # Send it
         await ctx.message.channel.send('Backup of `{}`, made on {}'.format(name, datetime.datetime.utcnow()),
                                        file=fi)
-
-        self.release_locks()
 
     @commands.command()
     @commands.check(has_player_perms)
@@ -800,6 +811,7 @@ class Elo:
         if len(self.match_history) < 1:
             self.raise_error("No events have been added!")
 
+        # We will have one or two arguments...
         args = arg.split()
         if len(args) > 1:
             try:
