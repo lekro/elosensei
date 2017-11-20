@@ -61,7 +61,13 @@ async def on_command(ctx):
 @bot.command()
 async def uptime(ctx):
     '''Check bot uptime.'''
-    await ctx.message.channel.send(datetime.datetime.now() - bot.startup_time)
+    delta = datetime.datetime.now() - bot.startup_time
+    fstr = 'Uptime: '
+    fstr += '{} days, '.format(delta.days) if delta.days != 0 else ''
+    minutes, seconds = divmod(delta.seconds, 60)
+    hours, minutes = divmod(delta.seconds, 60)
+    fstr += '%02d:%02d:%02d' % (hours, minutes, seconds)
+    await ctx.message.channel.send(fstr)
 
 
 @bot.command()
@@ -84,10 +90,8 @@ async def about(ctx):
 
     Elo-sensei collects and stores user information, including but
     not limited to usernames, nicknames, roles and other Discord
-    and game related information. However, no messages are stored 
-    except information derived from messages prefixed with the
-    bot prefix as provided in the configuration files. Voice-related
-    information is not collected at all.
+    and game related information. The volume and scope of user
+    information stored may vary by configuration.
     '''
 
     # Enclose in backticks and send
