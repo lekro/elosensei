@@ -249,9 +249,16 @@ class EloGuild:
 
     async def __aenter__(self):
         await self.acquire()
+        return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         self.release()
+
+
+    def __bytes__(self):
+
+        tup = self.id, self.events, self.players
+        return pickle.dumps(tup)
 
 
 class EloStore:
@@ -318,12 +325,6 @@ class EloStore:
 
                 tup = g.id, g.events, g.players
                 pickle.dump(tup, f)
-
-    async def get_bytes(self, gid):
-
-        guild = self.guilds[gid]
-        tup = guild.id, guild.events, guild.players
-        return pickle.dumps(tup)
 
 
     def init_guild(self, gid):
@@ -507,42 +508,44 @@ class Elo:
         nguild = self.store.init_guild(ctx.guild.id)
 
         # Get old EloGuild
-        async with self.store[ctx.guild.id] as oguild:
+        oguild = self.store[ctx.guild.id]
 
-            # For each match...
-            hist = oguild.events.sort_values('timestamp', ascending=False)
-        
-            for time, match in hist.groupby('timestamp', as_index=False):
-                match = match.copy()
-                # Replace the elo rating of each player with what it should be, from the user_status
-                match['elo'] = match['playerID'].apply(lambda p: self.get_elo(nguild.players, p))
+        # For each match...
+        hist = oguild.events.sort_values('timestamp', ascending=False)
+    
+        for time, match in hist.groupby('timestamp', as_index=False):
+            match = match.copy()
+            # Replace the elo rating of each player with 
+            # what it should be, from the user_status
+            match['elo'] = match['playerID'].apply(lambda p: 
+                    self.get_elo(nguild.players, p))
 
-                # Update the user status for each player
-                nguild.players = await self.update_players(ctx, match, nguild.players, update_roles=False)
+            # Update the user status for each player
+            nguild.players = await self.update_players(ctx, match, nguild.players, update_roles=False)
 
-                # Grab the new elo
-                match = match.drop('new_elo', axis=1, errors='ignore')
-                match = match.merge(nguild.players.reset_index()[['playerID', 'elo']].rename(columns=dict(elo='new_elo')), on='playerID')
+            # Grab the new elo
+            match = match.drop('new_elo', axis=1, errors='ignore')
+            match = match.merge(nguild.players.reset_index()[['playerID', 'elo']]
+                    .rename(columns=dict(elo='new_elo')), on='playerID')
 
-                # Add the match to the new match history
-                nguild.events = nguild.events.append(match, ignore_index=True)
+            # Add the match to the new match history
+            nguild.events = nguild.events.append(match, ignore_index=True)
 
         # Write in the new EloGuild
         self.store[ctx.guild.id] = nguild
 
         # Accessing the new EloGuild, update nicks and roles
-        with self.store[ctx.guild.id] as nguild:
-            # Update nicks...
-            players = nguild.players.index.tolist()
-            await self.update_nicks(ctx, players)
+        # Update nicks...
+        players = nguild.players.index.tolist()
+        await self.update_nicks(ctx, players)
 
-            # Update roles
-            # DEBUG
-            init_time = datetime.datetime.now()
-            # END DEBUG
-            for uid in players:
-                await self.update_rank(ctx, nguild.players, uid, update_roles=True)
-            print('Processing ranks took: {}'.format(datetime.datetime.now() - init_time))
+        # Update roles
+        # DEBUG
+        init_time = datetime.datetime.now()
+        # END DEBUG
+        for uid in players:
+            await self.update_rank(ctx, nguild.players, uid, update_roles=True)
+        print('Processing ranks took: {}'.format(datetime.datetime.now() - init_time))
 
 
     async def process_single_player_events(self, ctx, match_df, user_status, lock=None, update_roles=True):
@@ -602,17 +605,17 @@ class Elo:
         # If allowing only defined status values, we might have NaN values in there...
         # Fail if that happens..
         if team_elo['actual'].isnull().any():
-            self.raise_error('Unknown team status! Try one of `'+
+            raise EloError('Unknown team status! Try one of `'+
                                ('`, `').join(self.config['status_values'].keys()) + '`!')
 
         # If score limit must be met exactly...
         if self.config['require_score_limit'] and team_elo['actual'].sum() != self.config['score_limit']:
-            self.raise_error('Not enough/too many teams are winning/losing!')
+            raise EloError('Not enough/too many teams are winning/losing!')
 
         # Limit total score
         if team_elo['actual'].sum() > self.config['score_limit']:
             self.release_locks()
-            self.raise_error('Maximum score exceeded! Make sure the teams are not all winning!')
+            raise EloError('Maximum score exceeded! Make sure the teams are not all winning!')
 
         # Main formula for elo delta - the value column has the K factor.
         # Multiplication and subtraction here are POINTWISE.
@@ -782,7 +785,8 @@ class Elo:
             except ValueError:
                 pass
             else:
-                self.user_status.loc[member.id, 'name'] = member.display_name
+                guild = self.store[ctx.guild.id]
+                guild.players.loc[member.id, 'name'] = member.display_name
 
 
 
@@ -797,29 +801,27 @@ class Elo:
         https://github.com/lekro/elosensei/wiki/Manipulating-events
         '''
 
-        await self.acquire_locks()
+        with self.store[ctx.guild.id] as guild:
 
-        # Check if this event exists
-        if eventid not in self.match_history['eventID'].tolist():
-            raise_error("Can't edit a nonexisting event!")
-        old_event = self.match_history.query('eventID == @eventid')
+            # Check if this event exists
+            if eventid not in guild.events['eventID'].tolist():
+                raise_error("Can't edit a nonexisting event!")
+            old_event = guild.events.query('eventID == @eventid')
 
-        # Fill in NA values from old event.
-        event['value'] = event['value'].fillna(old_event['value'].iloc[0])
-        if old_event['comment'].iloc[0] is not None:
-            event['comment'] = event['comment'].fillna(old_event['comment'].iloc[0])
-        event['timestamp'] = event['timestamp'].fillna(old_event['timestamp'].iloc[0])
+            # Fill in NA values from old event.
+            event['value'] = event['value'].fillna(old_event['value'].iloc[0])
+            if old_event['comment'].iloc[0] is not None:
+                event['comment'] = event['comment'].fillna(old_event['comment'].iloc[0])
+            event['timestamp'] = event['timestamp'].fillna(old_event['timestamp'].iloc[0])
 
-        # Put old eventID
-        event['eventID'] = old_event['eventID'].iloc[0]
-        new_history = self.match_history.query('eventID != @eventid').append(event,
-                ignore_index=True)
+            # Put old eventID
+            event['eventID'] = old_event['eventID'].iloc[0]
+            new_history = guild.events.query('eventID != @eventid').append(event,
+                    ignore_index=True)
 
-        self.match_history = new_history
+            guild.events = new_history
 
-        await self.recalculate_elo(ctx)
-
-        self.release_locks()
+            await self.recalculate_elo(ctx)
 
         await ctx.message.channel.send('Edited event!', 
                 embed=await self.get_event_embed(ctx, event['timestamp'].iloc[0]))
@@ -835,30 +837,27 @@ class Elo:
         '''
 
         init_time = datetime.datetime.now()
-        await self.acquire_locks()
 
-        # Check if this event exists
-        if eventid not in self.match_history['eventID'].tolist():
-            self.raise_error("Can't delete a nonexisting event!")
-        self.match_history = self.match_history.query('eventID != @eventid')
-        
-        await self.recalculate_elo(ctx)
-        print('time taken for delete: {}'.format(datetime.datetime.now() - init_time))
+        with self.store[ctx.guild.id] as guild:
 
-        self.release_locks()
+            # Check if this event exists
+            if eventid not in guild.events['eventID'].tolist():
+                raise EloError("Can't delete a nonexisting event!")
+            guild.events = guild.events.query('eventID != @eventid')
+            
+            await self.recalculate_elo(ctx)
+            print('time taken for delete: {}'.format(datetime.datetime.now() - init_time))
 
         await ctx.message.channel.send('Deleted event!')
-        
 
 
     @commands.command()
     @commands.check(has_admin_perms)
-    async def backup(self, ctx, name: str):
+    async def backup(self, ctx):
         '''Request that the bot upload a Python pickle of the 
-        specified dataframe.
+        data for this guild.
 
-        USAGE: backup NAME
-        where NAME is the name of the dataframe to back up.
+        USAGE: backup 
 
         Note that the output format is a Python pickle. If you 
         wish to manipulate the output, you should open it up in
@@ -869,29 +868,9 @@ class Elo:
         # Do what you need to with the df
         '''
 
-        # Map args -> df
-        backup_map = {'users': self.user_status,
-                      'events': self.match_history}
+        with self.store[ctx.guild.id] as guild:
 
-        # Fail if the user picked some arg we don't know about
-        if name not in backup_map:
-            await ctx.message.channel.send("Unknown dataframe name! Try one of `"
-                                     + "`, `".join(backup_map.keys())
-                                     + "`!")
-            return
-
-        await self.acquire_locks()
-
-        df = backup_map[name]
-        # The bot is only compatible with Python>=3.5, so it doesn't
-        # hurt to use a pickle protocol available in Python>=3.4.
-        # We are converting to bytes with pickle instead of using
-        # pandas.to_pickle so we can keep all operations in memory
-        # and not write to disk at all.
-        backup_bytes = pickle.dumps(df, protocol=-1)
-
-        # Release locks now. Now all we need to do is send the backup_bytes to discord.
-        self.release_locks()
+            backup_bytes = bytes(guild)
 
         # Get BytesIO object reading from backup_bytes
         backup_io = io.BytesIO(backup_bytes)
@@ -900,8 +879,8 @@ class Elo:
         fi = discord.File(backup_io, filename='{}.pickle'.format(name))
 
         # Send it
-        await ctx.message.channel.send('Backup of `{}`, made on {}'.format(name, datetime.datetime.utcnow()),
-                                       file=fi)
+        await ctx.message.channel.send('Backup of `{}`, made on {}'.format(name, 
+            datetime.datetime.utcnow()), file=fi)
 
     @commands.command()
     @commands.check(has_player_perms)
@@ -915,89 +894,91 @@ class Elo:
         Display the second page of events on 2017-01-01: show 2017-01-01 2
         '''
 
-        await self.acquire_locks()
+        with self.store[ctx.guild.id] as guild:
 
-        if len(self.match_history) < 1:
-            self.raise_error("No events have been added!")
+            if len(guild.events) < 1:
+                raise EloError("No events have been added!")
 
-        # We will have one or two arguments...
-        args = arg.split()
-        if len(args) > 1:
-            try:
-                page = int(args[1])-1
-                print('page requested: %d' % page)
-            except ValueError:
-                self.raise_error("Page number must be an integer!")
-        else:
-            page = 0
-        arg = args[0]
-
-        try:
-            eventID = int(arg)
-        except ValueError:
-            # Try to parse it as a date
-            try:
-                timestamp = datetime.datetime.strptime(arg, '%Y-%m-%d')
-            except ValueError:
-                raise EloError("Couldn't parse argument as event ID or date!")
+            # We will have one or two arguments...
+            args = arg.split()
+            if len(args) > 1:
+                try:
+                    page = int(args[1])-1
+                    print('page requested: %d' % page)
+                except ValueError:
+                    raise EloError("Page number must be an integer!")
             else:
-                mask = (timestamp <= self.match_history['timestamp']) & \
-                        (timestamp + datetime.timedelta(days=1) > self.match_history['timestamp'])
-                timestamps = self.match_history.drop_duplicates(subset='timestamp').loc[mask, 'timestamp'].dt.to_pydatetime()
-                del mask
-        else:
-            if eventID not in self.match_history['eventID'].tolist():
-                self.raise_error("Couldn't find an event with ID #{}!".format(eventID))
-            mask = self.match_history['eventID'] == eventID
-            timestamps = self.match_history.drop_duplicates(subset='timestamp').loc[mask, 'timestamp'].dt.to_pydatetime()
+                page = 0
+            arg = args[0]
 
-        if len(timestamps) < 1:
-            self.raise_error("No events found!")
+            try:
+                eventID = int(arg)
+            except ValueError:
+                # Try to parse it as a date
+                try:
+                    timestamp = datetime.datetime.strptime(arg, '%Y-%m-%d')
+                except ValueError:
+                    raise EloError("Couldn't parse argument as event ID or date!")
+                else:
+                    mask = (timestamp <= guild.events['timestamp']) & \
+                            (timestamp + datetime.timedelta(days=1) \
+                            > guild.events['timestamp'])
+                    timestamps = guild.events.drop_duplicates(subset='timestamp')\
+                            .loc[mask, 'timestamp'].dt.to_pydatetime()
+                    del mask
+            else:
+                if eventID not in guild.events['eventID'].tolist():
+                    raise EloError("Couldn't find an event with ID #{}!".format(eventID))
+                mask = guild.events['eventID'] == eventID
+                timestamps = guild.events.drop_duplicates(subset='timestamp')\
+                        .loc[mask, 'timestamp'].dt.to_pydatetime()
 
-        print(timestamps)
+            if len(timestamps) < 1:
+                raise EloError("No events found!")
 
-        event_cards = [await self.get_event_embed(ctx, ts) for ts in timestamps]
+            event_cards = [await self.get_event_embed(ctx, ts) for ts in timestamps]
 
-        page_size = self.config['max_match_cards']
+            page_size = self.config['max_match_cards']
 
-        # If we find only one page of players, just output them.
-        if len(event_cards) <= page_size:
-            for card in event_cards:
-                await ctx.message.channel.send(embed=card)
-        # If we find more than one page, show the page number as well
-        else:
-            page_count = (len(event_cards) + page_size - 1) / page_size
-            if not (0 <= page < page_count):
-                self.release_locks()
-                raise EloError("Page index out of range!")
-            # Iterate through the player cards only in the page we want...
+            # If we find only one page of players, just output them.
+            if len(event_cards) <= page_size:
+                for card in event_cards:
+                    await ctx.message.channel.send(embed=card)
+            # If we find more than one page, show the page number as well
+            else:
+                page_count = (len(event_cards) + page_size - 1) / page_size
+                if not (0 <= page < page_count):
+                    self.release_locks()
+                    raise EloError("Page index out of range!")
+                # Iterate through the player cards only in the page we want...
             for i, card in enumerate(event_cards[page*page_size:(page+1)*page_size]):
                 if i==0:
-                    page_string = 'Showing page %d of %d of event cards.' % (page+1, page_count)
+                    page_string = 'Showing page %d of %d of event cards.' \
+                            % (page+1, page_count)
                 else:
                     page_string = ''
                 await ctx.message.channel.send(page_string, embed=card)
 
-        self.release_locks()
 
 
     async def get_event_embed(self, ctx, timestamp):
 
+        guild = self.store[ctx.guild.id]
 
         # First try to find the event
-        match = self.match_history.query('timestamp == @timestamp').copy()
+        match = guild.events.query('timestamp == @timestamp').copy()
         if len(match) == 0:
             # We couldn't find the event!
-            self.raise_error("Couldn't find event with timestamp {}!".format(timestamp))
+            raise EloError("Couldn't find event with timestamp {}!".format(timestamp))
 
         # Now that we have the event, we pretty-print
         # If the length is only 1, then this is a singleplayer event.
         if len(match) == 1 or isinstance(match, pd.Series):
-            return await self.get_single_player_event_embed(match)
+            return await self.get_single_player_event_embed(ctx, match)
         else:
-            return await self.get_match_embed(match)
+            return await self.get_match_embed(ctx, match)
 
-    async def get_single_player_event_embed(self, event):
+    async def get_single_player_event_embed(self, ctx, event):
 
         # Probably this is one of those score adjustments.
         # TODO: find a more elegant solution to this, right
@@ -1018,9 +999,10 @@ class Elo:
 
         # Add content. There aren't any fields here since that
         # tends to create a bunch of clutter, especially on mobile.
-        author = self.user_status.loc[row['playerID'], 'name']
+        author = self.store[ctx.guild.id].players.loc[row['playerID'], 'name']
         description = author + '\n'
-        description += "Value: {} ({} -> {})\n".format(row['value'], round(row['elo']), round(row['new_elo']))
+        description += "Value: {} ({} -> {})\n".format(row['value'], round(row['elo']),
+                round(row['new_elo']))
         if row['comment'] is not None:
             description += row['comment']
         embed = discord.Embed(title=title, author=author, description=description, type='rich',
@@ -1031,7 +1013,7 @@ class Elo:
         return embed
         
 
-    async def get_match_embed(self, match):
+    async def get_match_embed(self, ctx, match):
 
         # We can set the title to something like 1v1 Match
         if match['team'].nunique() < 2:
@@ -1040,7 +1022,8 @@ class Elo:
             desc_text = len(match) + "-player"
         else:
             # If there were two or more teams, output something like 1v1 match
-            desc_text = 'v'.join(match.groupby('team')['playerID'].count().astype(str).tolist())
+            desc_text = 'v'.join(match.groupby('team')['playerID']
+                    .count().astype(str).tolist())
         desc_text += ' match'
 
         # Set the title to the comment, if any.
@@ -1060,7 +1043,9 @@ class Elo:
             field_name = 'Team %s (%s)' % (team, team_members['status'].iloc[0])
             field_value = ''
             for i, t in team_members.iterrows():
-                field_value += '*%s* (%d -> %d)\n' % (self.user_status.loc[t['playerID'], 'name'], round(t['elo']), round(t['new_elo']))
+                field_value += '*%s* (%d -> %d)\n' \
+                        % (self.store[ctx.guild.id].players.loc[t['playerID'], 'name'],
+                                round(t['elo']), round(t['new_elo']))
             embed.add_field(name=field_name, value=field_value)
 
         # Show eventID
@@ -1077,10 +1062,12 @@ class Elo:
         user_id is of the player whose stats are to be shown.
         '''
 
+        guild = self.store[ctx.guild.id]
+
         # Try to retrieve the row pertaining to this user,
         # or return None.
-        if user_id in self.user_status.index:
-            uinfo = self.user_status.loc[user_id]
+        if user_id in guild.players.index:
+            uinfo = guild.players.loc[user_id]
         else:
             return None
 
@@ -1092,16 +1079,17 @@ class Elo:
 
         # Show name, rank, score in title
         title = '%s (%s, %d)' % (uinfo['name'], uinfo['rank'], 
-                round(self.get_masked_elo(self.user_status, user_id)))
+                round(self.get_masked_elo(guild.players, user_id)))
 
         # Construct description field
         description = "Wins: %d / Losses: %d / Total: %d\n" % (uinfo['wins'], uinfo['losses'], uinfo['matches_played'])
         description += "Player ID: %s\n" % user_id
-        description += "Raw Elo rating: %d\n" % round(self.get_elo(self.user_status, user_id))
+        description += "Raw Elo rating: %d\n"\
+                % round(self.get_elo(guild.players, user_id))
         description += "Bonuses: %d\n" % round(uinfo['mask'])
 
         # Get all matches played
-        ids_played = self.match_history.query('playerID == %s' % user_id)['eventID'].tolist()
+        ids_played = guild.events.query('playerID == %s' % user_id)['eventID'].tolist()
         ids_played = [str(i) for i in ids_played]
         description += "Events: %s\n" % (', '.join(ids_played))
         embed = discord.Embed(type='rich', description=description, color=int('0x' + uinfo['color'], base=16))
@@ -1116,9 +1104,8 @@ class Elo:
     @commands.check(has_admin_perms)
     async def recalculate(self, ctx):
         '''Recalculate elo ratings from scratch.'''
-        await self.acquire_locks()
-        await self.recalculate_elo(ctx)
-        self.release_locks()
+        with self.store[ctx.guild.id]:
+            await self.recalculate_elo(ctx)
         await ctx.message.channel.send('Recalculated elo ratings!')
 
     @commands.command()
@@ -1135,69 +1122,68 @@ class Elo:
         players whose names start with 'lekro'. 
         '''
 
-        await self.acquire_locks()
+        with self.store[ctx.guild.id] as guild:
 
-        # We may encounter duplicates when using the various methods of searching
-        # for players, so we will make a set here.
-        uids = set()
-        player_cards = []
-        if name is not None:
+            # We may encounter duplicates when using the various methods of searching
+            # for players, so we will make a set here.
+            uids = set()
+            player_cards = []
+            if name is not None:
 
-            # Get page number to display. This will be the last part of the name,
-            # if any.
-            # But we should first check if there is any whitespace...
-            # if there is no whitespace, then the name is the entire thing
-            # no matter what, even if it's a number!
-            spl = name.split()
-            if len(spl) <= 1:
-                page = 0
-            else:
-                try:
-                    page = int(spl[-1])
-                    # In case we did find a page number,
-                    # remove that from the name...
-                    name = " ".join(spl[:-1])
-                except ValueError:
+                # Get page number to display. This will be the last part of the name,
+                # if any.
+                # But we should first check if there is any whitespace...
+                # if there is no whitespace, then the name is the entire thing
+                # no matter what, even if it's a number!
+                spl = name.split()
+                if len(spl) <= 1:
                     page = 0
+                else:
+                    try:
+                        page = int(spl[-1])
+                        # In case we did find a page number,
+                        # remove that from the name...
+                        name = " ".join(spl[:-1])
+                    except ValueError:
+                        page = 0
 
-            # Now, we can add a list of user IDs by checking for 
-            # them in various ways...
+                # Now, we can add a list of user IDs by checking for 
+                # them in various ways...
 
-            # Check mentions in message
-            if len(ctx.message.mentions) > 0:
-                for mention in ctx.message.mentions:
-                    uids.add(mention.id)
+                # Check mentions in message
+                if len(ctx.message.mentions) > 0:
+                    for mention in ctx.message.mentions:
+                        uids.add(mention.id)
 
-            # Check in same way we do for matches
-            member = await self.parser.parse_user(ctx, name)
-            if member is not None:
-                uids.add(member.id)
-
-            # Check by iterating through names in the server...
-            for member in ctx.guild.members:
-                # Display name (nick or name)
-                if member.display_name.lower().startswith(name.lower()):
+                # Check in same way we do for matches
+                member = await self.parser.parse_user(ctx, name)
+                if member is not None:
                     uids.add(member.id)
-                # Name (Discord username)
-                if member.name.lower().startswith(name.lower()):
+
+                # Check by iterating through names in the server...
+                for member in ctx.guild.members:
+                    # Display name (nick or name)
+                    if member.display_name.lower().startswith(name.lower()):
                     uids.add(member.id)
+                    # Name (Discord username)
+                    if member.name.lower().startswith(name.lower()):
+                        uids.add(member.id)
 
-        else:
-            # The user hasn't passed a name argument
-            # Process self
-            uids.add(ctx.message.author.id)
+            else:
+                # The user hasn't passed a name argument
+                # Process self
+                uids.add(ctx.message.author.id)
 
-        # Get all relevant player cards
-        for uid in uids:
-            card = await self.get_player_card(ctx, uid)
-            if card is not None:
-                player_cards.append(card)
+            # Get all relevant player cards
+            for uid in uids:
+                card = await self.get_player_card(ctx, uid)
+                if card is not None:
+                    player_cards.append(card)
 
-        self.release_locks()
 
         # If we found no players, tell the caller that!
         if len(player_cards) == 0:
-            self.raise_error('Couldn\'t find any players!')
+            raise EloError('Couldn\'t find any players!')
 
         page_size = self.config['max_player_cards']
         # If we find only one page of players, just output them.
@@ -1208,7 +1194,7 @@ class Elo:
         else:
             page_count = (len(player_cards) + page_size - 1) / page_size
             if not (0 <= page < page_count):
-                self.raise_error("Page index out of range!")
+                raise EloError("Page index out of range!")
             # Iterate through the player cards only in the page we want...
             for i, card in enumerate(player_cards[page*page_size:(page+1)*page_size]):
                 if i==0:
@@ -1234,24 +1220,24 @@ class Elo:
             raise EloError('Invalid score type requested! Try one of '
                         + ', '.join(valid_score_types))
 
-        await self.acquire_locks()
-
         # Make sure the input is an integer
         try:
             n = int(n)
         except ValueError:
-            self.raise_error('The number of top players to show must be an integer!')
+            raise EloError('The number of top players to show must be an integer!')
 
         # Make sure the number is non-negative
         if n < 0:
-            self.raise_error('Cannot display a negative number of top players!')
+            raise EloError('Cannot display a negative number of top players!')
 
         # Make sure the number doesn't exceed the configurable limit
         if n > self.config['max_top']:
-            self.raise_error('Maximum players to display in top rankings is %d!'\
+            raise EloError('Maximum players to display in top rankings is %d!'\
                     % self.config['max_top'])
 
-        ustatus = self.user_status.copy()
+        with self.store[ctx.guild.id] as guild:
+
+            ustatus = guild.players.copy()
 
         # Figure out how the user wishes to sort this thing
         if score_type == 'mask':
@@ -1262,14 +1248,12 @@ class Elo:
             raise_error('Internal error! Score type `{}` is undefined!'.format(score_type))
 
         # Sort descending by that sort column
-        topn = self.user_status.sort_values('sort', ascending=False).head(n)
+        topn = ustatus.sort_values('sort', ascending=False).head(n)
         title = 'Top %d Players' % n
         desc = ''
         for i, (uid, uinfo) in enumerate(topn.iterrows()):
             desc += '%d. %s (%s, %d)\n' % (i+1, uinfo['name'], uinfo['rank'], round(uinfo['sort']))
-        print(desc)
         embed = discord.Embed(title=title, type='rich', description=desc)
 
-        self.release_locks()
         return await ctx.message.channel.send(embed=embed)
 
