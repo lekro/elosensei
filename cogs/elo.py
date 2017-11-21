@@ -318,7 +318,7 @@ class EloStore:
 
         else:
             self.logger.info('Saving ALL guilds...')
-            for gid, guild in self.guilds:
+            for gid, guild in self.guilds.items():
                 await self.save_guild(path, guild)
 
         self.logger.info('Save successful.')
@@ -775,7 +775,7 @@ class Elo:
         https://github.com/lekro/elosensei/wiki/Manipulating-events
         '''
 
-        with self.store[ctx.guild.id] as guild:
+        async with self.store[ctx.guild.id] as guild:
 
             # Check if this event exists
             if eventid not in guild.events['eventID'].tolist():
@@ -812,7 +812,7 @@ class Elo:
 
         init_time = datetime.datetime.now()
 
-        with self.store[ctx.guild.id] as guild:
+        async with self.store[ctx.guild.id] as guild:
 
             # Check if this event exists
             if eventid not in guild.events['eventID'].tolist():
@@ -842,7 +842,7 @@ class Elo:
         # Do what you need to with the df
         '''
 
-        with self.store[ctx.guild.id] as guild:
+        async with self.store[ctx.guild.id] as guild:
 
             backup_bytes = bytes(guild)
 
@@ -850,10 +850,10 @@ class Elo:
         backup_io = io.BytesIO(backup_bytes)
 
         # Create a discord File reading from that BytesIO
-        fi = discord.File(backup_io, filename='{}.pickle'.format(name))
+        fi = discord.File(backup_io, filename='{}.pickle'.format(guild.id))
 
         # Send it
-        await ctx.message.channel.send('Backup of `{}`, made on {}'.format(name, 
+        await ctx.message.channel.send('Backup made on {}'.format( 
             datetime.datetime.utcnow()), file=fi)
 
     @commands.command()
@@ -868,7 +868,7 @@ class Elo:
         Display the second page of events on 2017-01-01: show 2017-01-01 2
         '''
 
-        with self.store[ctx.guild.id] as guild:
+        async with self.store[ctx.guild.id] as guild:
 
             if len(guild.events) < 1:
                 raise EloError("No events have been added!")
@@ -924,13 +924,13 @@ class Elo:
                 if not (0 <= page < page_count):
                     raise EloError("Page index out of range!")
                 # Iterate through the player cards only in the page we want...
-            for i, card in enumerate(event_cards[page*page_size:(page+1)*page_size]):
-                if i==0:
-                    page_string = 'Showing page %d of %d of event cards.' \
-                            % (page+1, page_count)
-                else:
-                    page_string = ''
-                await ctx.message.channel.send(page_string, embed=card)
+                for i, card in enumerate(event_cards[page*page_size:(page+1)*page_size]):
+                    if i==0:
+                        page_string = 'Showing page %d of %d of event cards.' \
+                                % (page+1, page_count)
+                    else:
+                        page_string = ''
+                    await ctx.message.channel.send(page_string, embed=card)
 
 
 
@@ -1077,7 +1077,7 @@ class Elo:
     @commands.check(has_admin_perms)
     async def recalculate(self, ctx):
         '''Recalculate elo ratings from scratch.'''
-        with self.store[ctx.guild.id]:
+        async with self.store[ctx.guild.id]:
             await self.recalculate_elo(ctx)
         await ctx.message.channel.send('Recalculated elo ratings!')
 
@@ -1095,7 +1095,7 @@ class Elo:
         players whose names start with 'lekro'. 
         '''
 
-        with self.store[ctx.guild.id] as guild:
+        async with self.store[ctx.guild.id] as guild:
 
             # We may encounter duplicates when using the various methods of searching
             # for players, so we will make a set here.
@@ -1208,7 +1208,7 @@ class Elo:
             raise EloError('Maximum players to display in top rankings is %d!'\
                     % self.config['max_top'])
 
-        with self.store[ctx.guild.id] as guild:
+        async with self.store[ctx.guild.id] as guild:
 
             ustatus = guild.players.copy()
 
