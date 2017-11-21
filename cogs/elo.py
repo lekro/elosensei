@@ -247,17 +247,25 @@ class EloGuild:
         self.lock.release()
 
 
+    async def __aenter__(self):
+        await self.acquire()
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        self.release()
+
+
 class EloStore:
 
-    def __init__(self, path):
+    def __init__(self, config, path):
 
+        self.config = config
         self.logger = logging.getLogger('elo')
 
         self.guilds = {}
         self.load(path)
 
 
-    def load(self, path):
+    async def load(self, path):
 
         for entry in os.scandir(path):
 
@@ -287,23 +295,31 @@ class EloStore:
                 self.guilds[gid] = guild
 
 
-    def save(self, path, gid=None):
+    async def save(self, path=None, gid=None):
+
+        if path is None:
+            path = self.config['dataframe_path']
 
         if gid is not None:
-            self.save_guild(path, self.guilds[gid])
+            self.logger.info('Saving guild {}...'.format(gid))
+            await self.save_guild(path, self.guilds[gid])
 
-        for gid, guild in self.guilds:
-            self.save_guild(path, guild)
+        else:
+            self.logger.info('Saving ALL guilds...')
+            for gid, guild in self.guilds:
+                await self.save_guild(path, guild)
 
+        self.logger.info('Save successful.')
     
-    def save_guild(self, path, guild)
+    async def save_guild(self, path, guild)
 
-        with open(os.path.join(path, '{}.pickle'.format(guild.id)), 'wb') as f:
+        async with guild as g:
+            with open(os.path.join(path, '{}.pickle'.format(g.id)), 'wb') as f:
 
-            tup = guild.id, guild.events, guild.players
-            pickle.dump(tup, f)
+                tup = g.id, g.events, g.players
+                pickle.dump(tup, f)
 
-    def get_bytes(self, gid):
+    async def get_bytes(self, gid):
 
         guild = self.guilds[gid]
         tup = guild.id, guild.events, guild.players
@@ -327,14 +343,22 @@ class EloStore:
         all_ranks = [rank['name'] for rank in self.config['ranks']]
         players['rank'] = self.user_status['rank'].cat.add_categories(all_ranks)
 
+        return EloGuild(gid, events, players)
+        
+
     def __getitem__(self, key):
 
         # This is overloading the [] operator
         if key in self.guilds:
             return self.guilds[key]
         else:
-            self.init_guild(key)
+            self.guilds[key] = await self.init_guild(key)
             return self.guilds[key]
+
+    
+    def __setitem__(self, key, item):
+
+        self.guilds[key] = item
 
 
 async def on_command_error(ctx, error):
@@ -384,31 +408,7 @@ class Elo:
         self.config = config['elo']
         self.logger = logging.getLogger('elo')
 
-        # We also need to load the dataframes for both the match history
-        # and current users status, given paths in the config
-        try:
-            self.match_history = pd.read_pickle(self.config['match_history_path'])
-        except OSError:
-            # Create a new match history
-            self.match_history = pd.DataFrame(columns=['timestamp', 'eventID', 'playerID', 'elo', 'new_elo', 'team', 'status', 'value', 'comment'])
-
-        try:
-            self.user_status = pd.read_pickle(self.config['user_status_path'])
-        except OSError:
-            # Create new user status
-            self.user_status = pd.DataFrame(columns=['name', 'elo', 'wins', 'losses', 'matches_played', 'rank', 'color', 'mask'])
-            self.user_status.index.name = 'playerID'
-
-            # Set categorical dtype for rank
-            self.user_status['rank'] = self.user_status['rank'].astype('category')
-
-            # Get all the possible ranks and add them to the categorical type
-            all_ranks = [rank['name'] for rank in self.config['ranks']]
-            self.user_status['rank'] = self.user_status['rank'].cat.add_categories(all_ranks)
-
-        # Create locks to prevent race conditions during asynchronous operation
-        self.user_status_lock = asyncio.Lock()
-        self.match_history_lock = asyncio.Lock()
+        self.store = EloStore(config['dataframe_path'], config)
 
         bot.elo_config = self.config
 
@@ -439,13 +439,13 @@ class Elo:
             # the Task will exit.
             with suppress(asyncio.CancelledError):
                 self.logger.info('Autosaving event and user data.')
-                await self.save_dataframes()
+                await self.store.save()
 
     async def do_shutdown_tasks(self):
 
         if self.config['save_on_shutdown']:
             self.logger.info('Saving event and user data before shutdown...')
-            await self.save_dataframes()
+            await self.store.save()
             self.logger.info('Successfully saved.')
 
     async def save_dataframes(self, use_locks=True):
@@ -503,46 +503,46 @@ class Elo:
     async def recalculate_elo(self, ctx):
         '''Recalculate the Elo ratings and masks from scratch.'''
         
-        # Reinstantiate user status
-        user_status = pd.DataFrame(columns=self.user_status.columns)
-        user_status.index.name = 'playerID'
-        # Reinstantiate match history
-        match_history = pd.DataFrame(columns=self.match_history.columns)
+        # Create a new EloGuild
+        nguild = self.store.init_guild(ctx.guild.id)
 
-        # For each match...
-        hist = self.match_history.sort_values('timestamp', ascending=False)
+        # Get old EloGuild
+        async with self.store[ctx.guild.id] as oguild:
+
+            # For each match...
+            hist = oguild.events.sort_values('timestamp', ascending=False)
         
-        for time, match in hist.groupby('timestamp', as_index=False):
-            match = match.copy()
-            # Replace the elo rating of each player with what it should be, from the user_status
-            match['elo'] = match['playerID'].apply(lambda p: self.get_elo(user_status, p))
+            for time, match in hist.groupby('timestamp', as_index=False):
+                match = match.copy()
+                # Replace the elo rating of each player with what it should be, from the user_status
+                match['elo'] = match['playerID'].apply(lambda p: self.get_elo(nguild.players, p))
 
-            # Update the user status for each player
-            user_status = await self.update_players(ctx, match, user_status, update_roles=False)
+                # Update the user status for each player
+                nguild.players = await self.update_players(ctx, match, nguild.players, update_roles=False)
 
-            # Grab the new elo
-            match = match.drop('new_elo', axis=1, errors='ignore')
-            match = match.merge(user_status.reset_index()[['playerID', 'elo']].rename(columns=dict(elo='new_elo')), on='playerID')
+                # Grab the new elo
+                match = match.drop('new_elo', axis=1, errors='ignore')
+                match = match.merge(nguild.players.reset_index()[['playerID', 'elo']].rename(columns=dict(elo='new_elo')), on='playerID')
 
-            # Add the match to the new match history
-            match_history = match_history.append(match, ignore_index=True)
+                # Add the match to the new match history
+                nguild.events = nguild.events.append(match, ignore_index=True)
 
+        # Write in the new EloGuild
+        self.store[ctx.guild.id] = nguild
 
-        # Finally, update the Elo object's match history and user status
-        self.match_history = match_history
-        self.user_status = user_status
+        # Accessing the new EloGuild, update nicks and roles
+        with self.store[ctx.guild.id] as nguild:
+            # Update nicks...
+            players = nguild.players.index.tolist()
+            await self.update_nicks(ctx, players)
 
-        # Update nicks...
-        players = user_status.index.tolist()
-        await self.update_nicks(ctx, players)
-
-        # Update roles
-        # DEBUG
-        init_time = datetime.datetime.now()
-        # END DEBUG
-        for uid in players:
-            await self.update_rank(ctx, user_status, uid, update_roles=True)
-        print('Processing ranks took: {}'.format(datetime.datetime.now() - init_time))
+            # Update roles
+            # DEBUG
+            init_time = datetime.datetime.now()
+            # END DEBUG
+            for uid in players:
+                await self.update_rank(ctx, nguild.players, uid, update_roles=True)
+            print('Processing ranks took: {}'.format(datetime.datetime.now() - init_time))
 
 
     async def process_single_player_events(self, ctx, match_df, user_status, lock=None, update_roles=True):
