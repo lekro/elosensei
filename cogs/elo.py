@@ -343,11 +343,11 @@ class EloStore:
         players.index.name = 'playerID'
 
         # Set categorical dtype for rank
-        players['rank'] = self.user_status['rank'].astype('category')
+        players['rank'] = players['rank'].astype('category')
 
         # Get all the possible ranks and add them to the categorical type
         all_ranks = [rank['name'] for rank in self.config['ranks']]
-        players['rank'] = self.user_status['rank'].cat.add_categories(all_ranks)
+        players['rank'] = players['rank'].cat.add_categories(all_ranks)
 
         return EloGuild(gid, events, players)
         
@@ -454,36 +454,6 @@ class Elo:
             await self.store.save()
             self.logger.info('Successfully saved.')
 
-    async def save_dataframes(self, use_locks=True):
-        '''Save all dataframes to disk.
-        Note that this coroutine function acquires and releases locks itself
-        by default!'''
-
-        if use_locks:
-            await self.acquire_locks()
-        self.user_status.to_pickle(self.config['user_status_path'])
-        self.match_history.to_pickle(self.config['match_history_path'])
-        if use_locks:
-            self.release_locks()
-
-
-    async def acquire_locks(self):
-        '''Acquire locks for dataframes'''
-
-        await self.match_history_lock.acquire()
-        await self.user_status_lock.acquire()
-
-    def release_locks(self):
-        '''Release locks for dataframes'''
-
-        self.match_history_lock.release()
-        self.user_status_lock.release()
-
-    def raise_error(self, message='Internal error!'):
-        '''Release locks and raise an EloError with the given message.'''
-
-        self.release_locks()
-        raise EloError(message)
 
     def get_elo(self, user_status, player):
         '''Get the raw Elo rating from the given user status df.
@@ -619,7 +589,6 @@ class Elo:
 
         # Limit total score
         if team_elo['actual'].sum() > self.config['score_limit']:
-            self.release_locks()
             raise EloError('Maximum score exceeded! Make sure the teams are not all winning!')
 
         # Main formula for elo delta - the value column has the K factor.
@@ -953,7 +922,6 @@ class Elo:
             else:
                 page_count = (len(event_cards) + page_size - 1) / page_size
                 if not (0 <= page < page_count):
-                    self.release_locks()
                     raise EloError("Page index out of range!")
                 # Iterate through the player cards only in the page we want...
             for i, card in enumerate(event_cards[page*page_size:(page+1)*page_size]):
