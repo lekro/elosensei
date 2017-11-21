@@ -11,6 +11,7 @@ import shlex
 import pickle
 import io
 import logging
+import os
 from contextlib import suppress
 
 # Store a constant dict of string->string for descriptions of 
@@ -263,17 +264,21 @@ class EloGuild:
 
 class EloStore:
 
-    def __init__(self, config, path):
+    def __init__(self, config, path=None):
 
         self.config = config
         self.logger = logging.getLogger('elo')
 
         self.guilds = {}
+
+        if path is None:
+            path = config['dataframe_path']
         self.load(path)
 
 
-    async def load(self, path):
+    def load(self, path):
 
+        os.makedirs(path, exist_ok=True)
         for entry in os.scandir(path):
 
             # Skip things which aren't files
@@ -318,7 +323,7 @@ class EloStore:
 
         self.logger.info('Save successful.')
     
-    async def save_guild(self, path, guild)
+    async def save_guild(self, path, guild):
 
         async with guild as g:
             with open(os.path.join(path, '{}.pickle'.format(g.id)), 'wb') as f:
@@ -353,7 +358,7 @@ class EloStore:
         if key in self.guilds:
             return self.guilds[key]
         else:
-            self.guilds[key] = await self.init_guild(key)
+            self.guilds[key] = self.init_guild(key)
             return self.guilds[key]
 
     
@@ -409,7 +414,7 @@ class Elo:
         self.config = config['elo']
         self.logger = logging.getLogger('elo')
 
-        self.store = EloStore(config['dataframe_path'], config)
+        self.store = EloStore(self.config)
 
         bot.elo_config = self.config
 
@@ -1164,7 +1169,7 @@ class Elo:
                 for member in ctx.guild.members:
                     # Display name (nick or name)
                     if member.display_name.lower().startswith(name.lower()):
-                    uids.add(member.id)
+                        uids.add(member.id)
                     # Name (Discord username)
                     if member.name.lower().startswith(name.lower()):
                         uids.add(member.id)
