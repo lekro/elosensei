@@ -232,12 +232,46 @@ class EloEventConverter(commands.Converter):
 
 class EloGuild:
 
-    def __init__(self, gid, events, players):
+    def __init__(self, gid, config, events=None, players=None):
 
+        # Process required config and gid
         self.id = gid
-        self.events = events
-        self.players = players
+        self.config = config
+
+        # Process events and players. If either is unspecified,
+        # create new dataframes.
+        if events is not None:
+            self.events = events
+        else:
+            self.init_events()
+
+        if players is not None:
+            self.players = players
+        else:
+            self.init_players()
+
+        # Create lock to use with async context manager
         self.lock = asyncio.Lock()
+
+
+    def init_events(self):
+        # Create new events df
+        events = pd.DataFrame(columns=['timestamp', 'eventID', 'playerID', 
+                'elo', 'new_elo', 'team', 'status', 'value', 'comment'])
+
+
+    def init_players(self):
+        # Create new player status df
+        self.players = pd.DataFrame(columns=['name', 'elo', 'wins', 'losses', 
+            'matches_played', 'rank', 'color', 'mask'])
+        self.players.index.name = 'playerID'
+
+        # Set categorical dtype for rank
+        self.players['rank'] = self.players['rank'].astype('category')
+
+        # Get all the possible ranks and add them to the categorical type
+        all_ranks = [rank['name'] for rank in self.config['ranks']]
+        self.players['rank'] = self.players['rank'].cat.add_categories(all_ranks)
 
 
     async def acquire(self):
@@ -258,8 +292,7 @@ class EloGuild:
 
     def __bytes__(self):
 
-        tup = self.id, self.events, self.players
-        return pickle.dumps(tup)
+        return pickle.dumps(self)
 
 
 class EloStore:
@@ -288,21 +321,12 @@ class EloStore:
             with open(entry, 'rb') as f:
                 # We expect a tuple of (guildID, events, players)
                 try:
-                    tup = pickle.load(f)
+                    guild = pickle.load(f)
                 except pickle.UnpicklingError:
                     # Couldn't open as pickle, warn and continue
                     self.logger.warning("Couldn't unpickle file %s, skipping...",
                             entry.name)
                     continue
-
-                if len(tup) != 3:
-                    # Wrong tuple length.
-                    self.logger.warning('Wrong tuple length in file %s, skipping...',
-                            entry.name)
-                    continue
-
-                gid, events, players = tup
-                guild = EloGuild(gid, events, players)
 
                 self.guilds[gid] = guild
 
@@ -328,29 +352,8 @@ class EloStore:
         async with guild as g:
             with open(os.path.join(path, '{}.pickle'.format(g.id)), 'wb') as f:
 
-                tup = g.id, g.events, g.players
-                pickle.dump(tup, f)
+                pickle.dump(g, f)
 
-
-    def init_guild(self, gid):
-        '''Initialize the EloGuild object and its two dataframes'''
-
-        # Create new events df
-        events = pd.DataFrame(columns=['timestamp', 'eventID', 'playerID', 'elo', 'new_elo', 'team', 'status', 'value', 'comment'])
-
-        # Create new player status df
-        players = pd.DataFrame(columns=['name', 'elo', 'wins', 'losses', 'matches_played', 'rank', 'color', 'mask'])
-        players.index.name = 'playerID'
-
-        # Set categorical dtype for rank
-        players['rank'] = players['rank'].astype('category')
-
-        # Get all the possible ranks and add them to the categorical type
-        all_ranks = [rank['name'] for rank in self.config['ranks']]
-        players['rank'] = players['rank'].cat.add_categories(all_ranks)
-
-        return EloGuild(gid, events, players)
-        
 
     def __getitem__(self, key):
 
@@ -358,7 +361,7 @@ class EloStore:
         if key in self.guilds:
             return self.guilds[key]
         else:
-            self.guilds[key] = self.init_guild(key)
+            self.guilds[key] = EloGuild(key, self.config)
             return self.guilds[key]
 
     
@@ -480,7 +483,7 @@ class Elo:
         '''Recalculate the Elo ratings and masks from scratch.'''
         
         # Create a new EloGuild
-        nguild = self.store.init_guild(ctx.guild.id)
+        nguild = EloGuild(ctx.guild.id, self.config)
 
         # Get old EloGuild
         oguild = self.store[ctx.guild.id]

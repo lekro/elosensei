@@ -14,21 +14,23 @@ import cogs.eggs
 with open('config.json', 'r') as jsonconf:
     config = json.load(jsonconf)
 
+# Set up logging...
+fo = logging.Formatter('(%(name)s) %(asctime)s [%(levelname)s] %(message)s')
+sh = logging.StreamHandler()
+sh.setFormatter(fo)
+fh = logging.FileHandler('discord.log', encoding='utf-8', mode='w')
+
 # Make sure discord stuff is put into another log
 # This code is taken (almost) directly from the discord.py docs
 logger = logging.getLogger('discord')
 logger.setLevel(logging.DEBUG)
-handler = logging.FileHandler('discord.log', encoding='utf-8', mode='w')
-handler.setFormatter(logging.Formatter('%(asctime)s:%(levelname)s:'
-                                       '%(name)s: %(message)s'))
-logger.addHandler(handler)
+logger.addHandler(fh)
 
 # Have a logger for Elo...
 elo_logger = logging.getLogger('elo')
 elo_logger.setLevel(config['general']['log_level'])
-sh = logging.StreamHandler()
-sh.setFormatter(logging.Formatter('(%(name)s) %(asctime)s [%(levelname)s] %(message)s'))
 elo_logger.addHandler(sh)
+elo_logger.addHandler(fh)
 
 # Grab description and prefix from config
 description = config['general']['description']
