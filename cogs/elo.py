@@ -228,6 +228,115 @@ class EloEventConverter(commands.Converter):
                            + '`!')
         return await self.event_parser_map[event_type](ctx, event_type, event_spec)
 
+
+class EloGuild:
+
+    def __init__(self, gid, events, players):
+
+        self.id = gid
+        self.events = events
+        self.players = players
+        self.lock = asyncio.Lock()
+
+
+    async def acquire(self):
+        await self.lock.acquire()
+
+
+    def release(self):
+        self.lock.release()
+
+
+class EloStore:
+
+    def __init__(self, path):
+
+        self.logger = logging.getLogger('elo')
+
+        self.guilds = {}
+        self.load(path)
+
+
+    def load(self, path):
+
+        for entry in os.scandir(path):
+
+            # Skip things which aren't files
+            if not entry.is_file():
+                continue
+
+            with open(entry, 'rb') as f:
+                # We expect a tuple of (guildID, events, players)
+                try:
+                    tup = pickle.load(f)
+                except pickle.UnpicklingError:
+                    # Couldn't open as pickle, warn and continue
+                    self.logger.warning("Couldn't unpickle file %s, skipping...",
+                            entry.name)
+                    continue
+
+                if len(tup) != 3:
+                    # Wrong tuple length.
+                    self.logger.warning('Wrong tuple length in file %s, skipping...',
+                            entry.name)
+                    continue
+
+                gid, events, players = tup
+                guild = EloGuild(gid, events, players)
+
+                self.guilds[gid] = guild
+
+
+    def save(self, path, gid=None):
+
+        if gid is not None:
+            self.save_guild(path, self.guilds[gid])
+
+        for gid, guild in self.guilds:
+            self.save_guild(path, guild)
+
+    
+    def save_guild(self, path, guild)
+
+        with open(os.path.join(path, '{}.pickle'.format(guild.id)), 'wb') as f:
+
+            tup = guild.id, guild.events, guild.players
+            pickle.dump(tup, f)
+
+    def get_bytes(self, gid):
+
+        guild = self.guilds[gid]
+        tup = guild.id, guild.events, guild.players
+        return pickle.dumps(tup)
+
+
+    def init_guild(self, gid):
+        '''Initialize the EloGuild object and its two dataframes'''
+
+        # Create new events df
+        events = pd.DataFrame(columns=['timestamp', 'eventID', 'playerID', 'elo', 'new_elo', 'team', 'status', 'value', 'comment'])
+
+        # Create new player status df
+        players = pd.DataFrame(columns=['name', 'elo', 'wins', 'losses', 'matches_played', 'rank', 'color', 'mask'])
+        players.index.name = 'playerID'
+
+        # Set categorical dtype for rank
+        players['rank'] = self.user_status['rank'].astype('category')
+
+        # Get all the possible ranks and add them to the categorical type
+        all_ranks = [rank['name'] for rank in self.config['ranks']]
+        players['rank'] = self.user_status['rank'].cat.add_categories(all_ranks)
+
+    def __getitem__(self, key):
+
+        # This is overloading the [] operator
+        if key in self.guilds:
+            return self.guilds[key]
+        else:
+            self.init_guild(key)
+            return self.guilds[key]
+
+
 async def on_command_error(ctx, error):
     '''Global error handler which gives EloError back to the user'''
 

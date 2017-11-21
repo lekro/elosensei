@@ -9,8 +9,7 @@
 	},
 	"elo": {
 		"enable": true,
-		"match_history_path": "matches.pickle",
-		"user_status_path": "players.pickle",
+		"dataframe_path": "data",
 		"default_elo": 1200,
 		"default_status_value": 0.0,
 		"status_values": {
