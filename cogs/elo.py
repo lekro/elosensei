@@ -699,7 +699,7 @@ class Elo:
 
         self.logger.info('Manual save of events and users started by {} ({}).'
                 .format(ctx.message.author.name, ctx.message.author.id))
-        await self.save_dataframes()
+        await self.store.save(gid=ctx.guild.id)
         await ctx.message.channel.send('Save successful!')
 
 
@@ -714,61 +714,61 @@ class Elo:
         https://github.com/lekro/elosensei/wiki/Manipulating-events
         '''
         # Get locks
-        await self.acquire_locks()
+        async with self.store[ctx.guild.id] as guild:
 
-        # We should have already gotten a dataframe as event,
-        # since we wrote EloEventConverter, which should have
-        # already parsed the event...
+            # We should have already gotten a dataframe as event,
+            # since we wrote EloEventConverter, which should have
+            # already parsed the event...
 
-        # Fill in current time if timestamp was not specified.
-        event['timestamp'] = event['timestamp'].fillna(datetime.datetime.utcnow())
-                
-        # Fill in current elo of players...
-        event['elo'] = event['playerID'].map(lambda x: self.get_elo(self.user_status, x))
-        event['value'] = event['value'].fillna(self.config['k_factor'])
+            # Fill in current time if timestamp was not specified.
+            event['timestamp'] = event['timestamp'].fillna(datetime.datetime.utcnow())
+                    
+            # Fill in current elo of players...
+            event['elo'] = event['playerID'].map(lambda x: 
+                    self.get_elo(guild.players, x))
+            event['value'] = event['value'].fillna(self.config['k_factor'])
 
-        # Now we're ready to update the players' Elo ratings...
-        new_user_status = await self.update_players(ctx, event, self.user_status)
+            # Now we're ready to update the players' Elo ratings...
+            new_user_status = await self.update_players(ctx, event, guild.players)
 
-        # If the update was successful, update the Elo ratings of all players
-        if new_user_status is not None:
-            self.user_status = new_user_status
-        else:
-            return
+            # If the update was successful, update the Elo ratings of all players
+            if new_user_status is not None:
+                guild.players = new_user_status
+            else:
+                return
 
-        # Bring the new elo scores back into the match dataframe...
-        event = event.merge(self.user_status.reset_index()[['playerID', 'elo']]
-                .rename(columns=dict(elo='new_elo')), on='playerID')
+            # Bring the new elo scores back into the match dataframe...
+            event = event.merge(guild.players.reset_index()[['playerID', 'elo']]
+                    .rename(columns=dict(elo='new_elo')), on='playerID')
 
 
-        # Assign an eventID
-        if len(self.match_history > 0):
-            event['eventID'] = self.match_history['eventID'].max() + 1
-        else: 
-            event['eventID'] = self.match_history['timestamp'].nunique() + 1
+            # Assign an eventID
+            if len(guild.events) > 0:
+                event['eventID'] = guild.events['eventID'].max() + 1
+            else: 
+                event['eventID'] = guild.events['timestamp'].nunique() + 1
 
-        # Update nicks
-        players = event['playerID'].tolist()
-        await self.update_nicks(ctx, players)
-        
-        # Add this event to the match history
-        self.match_history = self.match_history.append(event, ignore_index=True)
-        # Sometimes there are circular references within dataframes? so we have to
-        # invoke the gc
-        gc.collect()
-        timestamp = event.timestamp.iloc[0]
+            # Update nicks
+            players = event['playerID'].tolist()
+            await self.update_nicks(ctx, players)
+            
+            # Add this event to the match history
+            guild.events = guild.events.append(event, ignore_index=True)
+            # Sometimes there are circular references within dataframes? so we have to
+            # invoke the gc
+            gc.collect()
+            timestamp = event.timestamp.iloc[0]
 
-        # In case the timestamp was older than the latest event, we need to recalculate
-        # elo! This event belongs somewhere in the middle of the match history,
-        # in that case.
-        if timestamp < self.match_history['timestamp'].max():
-            print('Timestamp {} was older than latest {}!'.format(timestamp,
-                self.match_history['timestamp'].max()))
-            await self.recalculate_elo(ctx)
-        await ctx.message.channel.send(embed=await self.get_event_embed(ctx, timestamp))
+            # In case the timestamp was older than the latest event, we need to redo
+            # elo! This event belongs somewhere in the middle of the match history,
+            # in that case.
+            if timestamp < guild.events['timestamp'].max():
+                print('Timestamp {} was older than latest {}!'.format(timestamp,
+                    guild.events['timestamp'].max()))
+                await self.recalculate_elo(ctx)
+            await ctx.message.channel.send(
+                    embed=await self.get_event_embed(ctx, timestamp))
 
-        # Release locks
-        self.release_locks()
 
     
     async def update_nicks(self, ctx, uids):
