@@ -523,7 +523,7 @@ class Elo:
         # END DEBUG
         for uid in players:
             await self.update_rank(ctx, nguild.players, uid, update_roles=True)
-        print('Processing ranks took: {}'.format(datetime.datetime.now() - init_time))
+        self.logger.debug('Processing ranks took: {}'.format(datetime.datetime.now() - init_time))
 
 
     async def process_single_player_events(self, ctx, match_df, user_status, lock=None, update_roles=True):
@@ -743,7 +743,7 @@ class Elo:
             # elo! This event belongs somewhere in the middle of the match history,
             # in that case.
             if timestamp < guild.events['timestamp'].max():
-                print('Timestamp {} was older than latest {}!'.format(timestamp,
+                self.logger.debug('Recalculating: Timestamp {} was older than latest {}!'.format(timestamp,
                     guild.events['timestamp'].max()))
                 await self.recalculate_elo(ctx)
             await ctx.message.channel.send(
@@ -823,7 +823,7 @@ class Elo:
             guild.events = guild.events.query('eventID != @eventid')
             
             await self.recalculate_elo(ctx)
-            print('time taken for delete: {}'.format(datetime.datetime.now() - init_time))
+            self.logger.debug('time taken for delete: {}'.format(datetime.datetime.now() - init_time))
 
         await ctx.message.channel.send('Deleted event!')
 
@@ -881,7 +881,6 @@ class Elo:
             if len(args) > 1:
                 try:
                     page = int(args[1])-1
-                    print('page requested: %d' % page)
                 except ValueError:
                     raise EloError("Page number must be an integer!")
             else:
