@@ -48,7 +48,7 @@ bot.startup_time = datetime.datetime.now()
 async def on_ready():
     elo_logger.info('Logged in as {} ({})'.format(bot.user.name, bot.user.id))
     elo_logger.info('Invite: https://discordapp.com/oauth2/authorize?client_id={}&scope=bot'.format(bot.user.id))
-    await bot.change_presence(game=discord.Game(name=config['general']['playing']))
+    await bot.change_presence(activity=discord.Game(name=config['general']['playing']))
 
 
 @bot.event
