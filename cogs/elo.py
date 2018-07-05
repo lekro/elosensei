@@ -395,16 +395,22 @@ class Elo:
         '''Recalculate the Elo ratings and masks from scratch.'''
         
         # Reinstantiate user status
-        user_status = pd.DataFrame(columns=self.user_status.columns)
+        user_status = pd.DataFrame(columns=self.user_status.columns) # Columns: [name, elo, wins, losses, matches_played, rank, color, mask]
         user_status.index.name = 'playerID'
+        
         # Reinstantiate match history
-        match_history = pd.DataFrame(columns=self.match_history.columns)
+        match_history = pd.DataFrame(columns=self.match_history.columns) # Columns: [comment, elo, eventID, new_elo, playerID, status, team, timestamp, value]
 
         # For each match...
         hist = self.match_history.sort_values('timestamp', ascending=False)
+
         
         for time, match in hist.groupby('timestamp', as_index=False):
-            match = match.copy()
+            
+            # time is the grouping label, match is a dataframe with the data for that group    
+
+            match = match.copy() 
+
             # Replace the elo rating of each player with what it should be, from the user_status
             match['elo'] = match['playerID'].apply(lambda p: self.get_elo(user_status, p))
 
@@ -413,6 +419,7 @@ class Elo:
 
             # Grab the new elo
             match = match.drop('new_elo', axis=1, errors='ignore')
+            match['playerID']=match['playerID'].apply(int) 
             match = match.merge(user_status.reset_index()[['playerID', 'elo']].rename(columns=dict(elo='new_elo')), on='playerID')
 
             # Add the match to the new match history
@@ -1153,7 +1160,7 @@ class Elo:
             raise_error('Internal error! Score type `{}` is undefined!'.format(score_type))
 
         # Sort descending by that sort column
-        topn = self.user_status.sort_values('sort', ascending=False).head(n)
+        topn = ustatus.sort_values('sort', ascending=False).head(n)
         title = 'Top %d Players' % n
         desc = ''
         for i, (uid, uinfo) in enumerate(topn.iterrows()):
